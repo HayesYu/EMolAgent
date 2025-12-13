@@ -4,9 +4,6 @@ import json
 import re
 import shutil
 from ase.db import connect
-
-# 引入你原本的库 (假设环境已配置好)
-# 注意：为了代码运行，请确保这些库在你的PYTHONPATH中
 from emoles.dptb import process_dataset, setup_dataset, setup_db_path, setup_output_directory
 from dptb.data.dataloader import DataLoader
 from dptb.data import build_dataset
@@ -33,16 +30,35 @@ def run_dptb_inference(data_root, model_path, output_dir="output", db_name="dump
         setup_output_directory(output_dir)
         abs_db_path = setup_db_path(db_name)
 
-        # 构建数据集 (这里保留了你原脚本的配置，如果需要动态配置，可以扩展参数)
+        # 构建数据集
         dataset = build_dataset(
             root=data_root,
             type="LMDBDataset",
-            prefix="data.0", # 如果报错找不到文件，Agent可能会尝试修改这个
+            prefix="data.0",
             get_overlap=False,
             get_Hamiltonian=True,
-            # ... (保留原脚本的 basis 和 r_max 设置，为简洁省略，请补全) ...
-             basis={ "Li": "3s2p", "C": "3s2p1d", "N": "3s2p1d", "S": "4s3p1d", "O": "3s2p1d", "F": "3s2p1d", "H": "2s1p", "B": "3s2p1d", "P": "4s3p1d" },
-             r_max={ "Li": 12, "C": 10, "N": 10, "S": 8, "O": 9, "F": 8, "H": 8.5, "B": 9, "P": 8 },
+            basis={
+                "Li": "3s2p",
+                "C": "3s2p1d",
+                "N": "3s2p1d",
+                "S": "4s3p1d",
+                "O": "3s2p1d",
+                "F": "3s2p1d",
+                "H": "2s1p",
+                "B": "3s2p1d",
+                "P": "4s3p1d"
+            },
+            r_max={
+                "Li": 12,
+                "C": 10,
+                "N": 10,
+                "S": 8,
+                "O": 9,
+                "F": 8,
+                "H": 8.5,
+                "B": 9,
+                "P": 8
+                },
         )
         
         data_loader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=0)
