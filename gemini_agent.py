@@ -2,28 +2,25 @@ import os
 import json
 
 import streamlit as st
-# --- 1. 导入必要的库 ---
 from langchain_google_genai import ChatGoogleGenerativeAI
-# 注意：这里引入了 create_tool_calling_agent 和 AgentExecutor
 from langchain.agents import create_tool_calling_agent, AgentExecutor
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain.tools import StructuredTool
 from langchain.callbacks import StreamlitCallbackHandler
 
-from tools_lib import run_dptb_inference, update_db_metadata, generate_viz_report
+from tools_lib import run_dptb_inference, generate_viz_report
 
-# --- 2. 环境变量配置 ---
 os.environ["NO_PROXY"] = "localhost,127.0.0.1,0.0.0.0"
 os.environ["HTTP_PROXY"] = "http://127.0.0.1:7890"
 os.environ["HTTPS_PROXY"] = "http://127.0.0.1:7890"
 
 DEFAULT_MODEL_PATH = "/home/hayes/EMolAgent_demo/nnenv.iter147201.pth"
 
-# --- 3. 页面配置 ---
+# --- 页面配置 ---
 st.set_page_config(page_title="EMol-Vis Local Agent", page_icon="🧪", layout="wide")
 st.title("🧪 EMolAgent")
 
-# --- 4. 侧边栏与控制 ---
+# --- 侧边栏与控制 ---
 with st.sidebar:
     st.header("控制面板")
     
@@ -45,7 +42,7 @@ with st.sidebar:
     temperature = st.slider("温度 (Temperature)", 0.0, 1.0, 0.0)
     st.info(f"**当前默认模型**:\n{os.path.basename(DEFAULT_MODEL_PATH)}")
 
-# --- 5. 初始化本地 LLM ---
+# --- 初始化本地 LLM ---
 if not api_key:
     st.warning("⚠️ 请在左侧侧边栏输入 Google API Key 以启动 Agent。")
     st.stop()
@@ -60,8 +57,6 @@ try:
 except Exception as e:
     st.error(f"模型连接失败: {e}")
     st.stop()
-
-# --- 6. 定义增强版工具 ---
 
 def validate_path_exists(path: str, description: str):
     """检查路径是否存在，不存在则终止"""
@@ -78,10 +73,10 @@ def run_dptb_inference_safe(data_root, model_path=None, output_dir="output", db_
     validate_path_exists(model_path, "模型文件")
     return run_dptb_inference(data_root, model_path, output_dir, db_name)
 
-def update_db_metadata_safe(input_db, input_paths_file, output_db="updated.db"):
-    validate_path_exists(input_db, "输入数据库")
-    validate_path_exists(input_paths_file, "路径文件")
-    return update_db_metadata(input_db, input_paths_file, output_db)
+# def update_db_metadata_safe(input_db, input_paths_file, output_db="updated.db"):
+#     validate_path_exists(input_db, "输入数据库")
+#     validate_path_exists(input_paths_file, "路径文件")
+#     return update_db_metadata(input_db, input_paths_file, output_db)
 
 def generate_viz_report_smart(abs_ase_path, npy_folder_path):
     validate_path_exists(abs_ase_path, "ASE数据库")
@@ -115,26 +110,25 @@ tools = [
         name="Run_Inference",
         description="Step 1. Run inference. Args: data_root. (Model path defaults to built-in if not provided)"
     ),
-    StructuredTool.from_function(
-        func=update_db_metadata_safe,
-        name="Update_Metadata",
-        description="Step 2. Update metadata. Args: input_db, input_paths_file."
-    ),
+    # StructuredTool.from_function(
+    #     func=update_db_metadata_safe,
+    #     name="Update_Metadata",
+    #     description="Step 2. Update metadata. Args: input_db, input_paths_file."
+    # ),
     StructuredTool.from_function(
         func=generate_viz_report_smart,
         name="Generate_Visualization",
-        description="Step 3. Generate HTML report. Args: abs_ase_path, npy_folder_path."
+        description="Step 2. Generate HTML report. Args: abs_ase_path, npy_folder_path."
     )
 ]
 
-# --- 7. 初始化 Agent (使用新版 Tool Calling API) ---
+# --- 初始化 Agent (使用新版 Tool Calling API) ---
 
 custom_system_prefix = """
 你是一个计算化学 AI 助手。请按顺序执行以下步骤：
-1. Run_Inference
-2. Update_Metadata
-3. Generate_Visualization
-4. 请根据返回的 JSON 数据回答用户的误差结果，并给出生成的 cube 文件的路径，告诉用户内含 html 文件, 可查看具体图像, 然后结束对话。
+1. Run_Inference (执行推理，生成 npy 和 db 文件)
+2. Generate_Visualization (计算误差并生成可视化文件)
+3. 请根据返回的 JSON 数据回答用户的误差结果，并给出生成的 cube 文件的路径，告诉用户内含 html 文件, 可查看具体图像, 然后结束对话。
 【极重要规则】：
 - 当你执行完 "Generate_Visualization" 后，工具会直接返回 JSON 数据内容。
 - **一旦你看到了 JSON 数据，必须立即停止调用任何工具！**
@@ -166,11 +160,11 @@ except Exception as e:
     st.error(f"Agent 初始化失败: {repr(e)}")
     st.stop()
 
-# --- 8. 聊天逻辑 ---
+# --- 聊天逻辑 ---
 
 if "messages" not in st.session_state:
     st.session_state["messages"] = [
-        {"role": "assistant", "content": "你好！请告诉我数据路径、和 Spin/Charge 映射文件位置。"}
+        {"role": "assistant", "content": "你好！请告诉我数据路径。"}
     ]
 
 for msg in st.session_state.messages:
@@ -183,7 +177,6 @@ if prompt_input := st.chat_input("请输入指令..."):
     with st.chat_message("assistant"):
         st_callback = StreamlitCallbackHandler(st.container())
         try:
-            # --- 关键修改：使用 .invoke 而不是 .run ---
             response = agent_executor.invoke(
                 {"input": prompt_input}, 
                 config={"callbacks": [st_callback]}

@@ -12,6 +12,9 @@ import e3nn
 from emoles.loss import get_mae_from_npy
 from emoles.pyscf import generate_cube_files
 from emoles.py3Dmol import cubes_2_htmls
+from pprint import pprint
+
+e3nn.set_optimization_defaults(jit_script_fx=False)
 
 # --- 工具 1: 推理 (Inference) ---
 def run_dptb_inference(data_root, model_path, output_dir="output", db_name="dump.db"):
@@ -24,7 +27,6 @@ def run_dptb_inference(data_root, model_path, output_dir="output", db_name="dump
         db_name: 输出的数据库文件名
     """
     try:
-        e3nn.set_optimization_defaults(jit_script_fx=False)
         
         # 路径处理
         setup_output_directory(output_dir)
@@ -36,6 +38,7 @@ def run_dptb_inference(data_root, model_path, output_dir="output", db_name="dump
             type="LMDBDataset",
             prefix="data.0",
             get_overlap=False,
+            train_w_charge=True,
             get_Hamiltonian=True,
             basis={
                 "Li": "3s2p",
@@ -77,6 +80,9 @@ def run_dptb_inference(data_root, model_path, output_dir="output", db_name="dump
             db_path=abs_db_path,
             save_data_flag=True,
             save_npy_flag=True,
+            save_db_predicted=False,
+            save_db_original=False,
+            max_items=None
         )
         
         return f"推理完成。DB保存至: {abs_db_path}, NPY保存至: {output_dir}, 平均耗时: {time_per_item:.4f}s"
@@ -85,34 +91,34 @@ def run_dptb_inference(data_root, model_path, output_dir="output", db_name="dump
         return f"Error in run_dptb_inference: {str(e)}"
 
 # --- 工具 2: 更新元数据 (Update Metadata) ---
-def update_db_metadata(input_db, input_paths_file, output_db="updated.db"):
-    """
-    根据路径文件更新数据库中的 spin 和 charge。
-    """
-    try:
-        path_pattern = re.compile(r'spin_(\d+)_charge_([+-]?\d+)')
-        count = 0
+# def update_db_metadata(input_db, input_paths_file, output_db="updated.db"):
+#     """
+#     根据路径文件更新数据库中的 spin 和 charge。
+#     """
+#     try:
+#         path_pattern = re.compile(r'spin_(\d+)_charge_([+-]?\d+)')
+#         count = 0
         
-        with connect(input_db) as src_db, connect(output_db) as dst_db, open(input_paths_file) as f:
-            for row, path in zip(src_db.select(), f):
-                match = path_pattern.search(path)
-                if not match:
-                    continue # 或者记录警告
+#         with connect(input_db) as src_db, connect(output_db) as dst_db, open(input_paths_file) as f:
+#             for row, path in zip(src_db.select(), f):
+#                 match = path_pattern.search(path)
+#                 if not match:
+#                     continue # 或者记录警告
 
-                spin = int(match.group(1))
-                charge = int(match.group(2))
+#                 spin = int(match.group(1))
+#                 charge = int(match.group(2))
                 
-                data = row.data.copy()
-                data.update({"spin": spin, "charge": charge, "path": path.strip()})
-                dst_db.write(row.toatoms(), data=data)
-                count += 1
+#                 data = row.data.copy()
+#                 data.update({"spin": spin, "charge": charge, "path": path.strip()})
+#                 dst_db.write(row.toatoms(), data=data)
+#                 count += 1
                 
-        return f"元数据更新完成。已写入 {output_db}, 共处理 {count} 条记录。"
+#         return f"元数据更新完成。已写入 {output_db}, 共处理 {count} 条记录。"
     
-    except Exception as e:
-        return f"Error in update_db_metadata: {str(e)}"
+#     except Exception as e:
+#         return f"Error in update_db_metadata: {str(e)}"
 
-# --- 工具 3: 可视化与分析 (Viz & Analysis) ---
+# --- 工具 2: 可视化与分析 (Viz & Analysis) ---
 def generate_viz_report(abs_ase_path, npy_folder_path):
     """
     生成 Cube 文件、HTML 可视化以及 MAE 报告。
@@ -122,13 +128,15 @@ def generate_viz_report(abs_ase_path, npy_folder_path):
         convention = 'def2svp'
         
         # 临时路径
+        os.makedirs(npy_folder_path, exist_ok=True)
         temp_data_file = os.path.abspath('temp_data.npz')
         cube_dump_place = os.path.abspath('cubes')
         if os.path.exists(cube_dump_place):
             shutil.rmtree(cube_dump_place)
-        os.makedirs(cube_dump_place, exist_ok=True)
+        # os.makedirs(cube_dump_place, exist_ok=True)
         if os.path.exists(temp_data_file):
             os.remove(temp_data_file)
+        os.makedirs(cube_dump_place)
 
         # 1. 计算 MAE
         total_error_dict = get_mae_from_npy(
@@ -137,13 +145,13 @@ def generate_viz_report(abs_ase_path, npy_folder_path):
             temp_data_file=temp_data_file, 
             save_summary=True,
             united_overlap_flag=True, 
-            convention=convention, 
-            mol_charge=1
+            convention=convention
         )
 
         # 2. 保存 JSON 报告
-        report_path = 'test_results.json'
-        with open(report_path, 'w') as f:
+        pprint(total_error_dict)
+        json_path = 'test_results.json'
+        with open(json_path, 'w') as f:
             json.dump(total_error_dict, f, indent=2)
 
         # 3. 生成 Cube
@@ -152,7 +160,7 @@ def generate_viz_report(abs_ase_path, npy_folder_path):
         # 4. 生成 HTML
         cubes_2_htmls(cube_dump_place, 0.03)
 
-        return f"分析完成。MAE 报告: {report_path}, Cube/HTML 文件位于: {cube_dump_place}"
+        return f"分析完成。MAE 报告: {json_path}, Cube/HTML 文件位于: {cube_dump_place}"
 
     except Exception as e:
         return f"Error in generate_viz_report: {str(e)}"
