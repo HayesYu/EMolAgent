@@ -30,7 +30,12 @@ def run_dptb_inference(data_root, model_path, output_dir="output", db_name="dump
         
         # 路径处理
         setup_output_directory(output_dir)
-        abs_db_path = setup_db_path(db_name)
+        if os.path.isabs(db_name) or os.path.dirname(db_name):
+            abs_db_path = db_name
+        else:
+            abs_db_path = os.path.join(output_dir, db_name)
+
+        os.makedirs(os.path.dirname(abs_db_path), exist_ok=True)
 
         # 构建数据集
         dataset = build_dataset(
@@ -119,7 +124,7 @@ def run_dptb_inference(data_root, model_path, output_dir="output", db_name="dump
 #         return f"Error in update_db_metadata: {str(e)}"
 
 # --- 工具 2: 可视化与分析 (Viz & Analysis) ---
-def generate_viz_report(abs_ase_path, npy_folder_path):
+def generate_viz_report(abs_ase_path, npy_folder_path, work_dir):
     """
     生成 Cube 文件、HTML 可视化以及 MAE 报告。
     """
@@ -127,16 +132,16 @@ def generate_viz_report(abs_ase_path, npy_folder_path):
         n_grid = 75
         convention = 'def2svp'
         
-        # 临时路径
-        os.makedirs(npy_folder_path, exist_ok=True)
-        temp_data_file = os.path.abspath('temp_data.npz')
-        cube_dump_place = os.path.abspath('cubes')
+        os.makedirs(work_dir, exist_ok=True)
+        temp_data_file = os.path.join(work_dir, 'temp_data.npz')
+        cube_dump_place = os.path.join(work_dir, 'cubes')
+        json_path = os.path.join(work_dir, 'test_results.json')
+        
         if os.path.exists(cube_dump_place):
             shutil.rmtree(cube_dump_place)
-        # os.makedirs(cube_dump_place, exist_ok=True)
         if os.path.exists(temp_data_file):
             os.remove(temp_data_file)
-        os.makedirs(cube_dump_place)
+        os.makedirs(cube_dump_place, exist_ok=True)
 
         # 1. 计算 MAE
         total_error_dict = get_mae_from_npy(
@@ -150,7 +155,6 @@ def generate_viz_report(abs_ase_path, npy_folder_path):
 
         # 2. 保存 JSON 报告
         pprint(total_error_dict)
-        json_path = 'test_results.json'
         with open(json_path, 'w') as f:
             json.dump(total_error_dict, f, indent=2)
 
