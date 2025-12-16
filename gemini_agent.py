@@ -8,6 +8,7 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain.tools import StructuredTool
 from langchain.callbacks import StreamlitCallbackHandler
+import extra_streamlit_components as stx
 
 from tools_lib import run_dptb_inference, generate_viz_report
 import database as db
@@ -21,12 +22,27 @@ DEFAULT_MODEL_PATH = "/home/hayes/EMolAgent_demo/nnenv.iter147201.pth"
 # --- 页面配置 ---
 st.set_page_config(page_title="EMol-Vis Local Agent", page_icon="🧪", layout="wide")
 
+def get_manager():
+    return stx.CookieManager()
+
+cookie_manager = get_manager()
+
 # ==============================================================================
 # 1. 认证模块 (登录/注册 UI)
 # ==============================================================================
 
 if "user" not in st.session_state:
     st.session_state["user"] = None
+
+# 尝试从 Cookie 恢复会话
+if st.session_state["user"] is None:
+    # 获取 cookie 中的 token
+    token = cookie_manager.get("auth_token")
+    if token:
+        user_info = db.verify_jwt_token(token)
+        if user_info:
+            st.session_state["user"] = user_info
+            st.session_state["current_chat_id"] = None # 或者恢复上次的会话ID
 
 def login_page():
     st.title("🧪 EMolAgent - 请先登录")
@@ -43,6 +59,8 @@ def login_page():
                 if user:
                     st.session_state["user"] = user
                     st.session_state["current_chat_id"] = None # 登录后重置当前会话
+                    token = db.create_jwt_token(user["id"], user["username"])
+                    cookie_manager.set("auth_token", token)
                     st.success("登录成功！")
                     st.rerun()
                 else:
@@ -81,6 +99,7 @@ with st.sidebar:
         st.session_state["user"] = None
         st.session_state["messages"] = []
         st.session_state["current_chat_id"] = None
+        cookie_manager.delete("auth_token")
         st.rerun()
     
     st.markdown("---")
@@ -131,10 +150,21 @@ with st.sidebar:
 # --- 检查会话状态 ---
 # 如果进入主界面但没有选定会话（例如刚登录），自动创建一个新会话
 if st.session_state.get("current_chat_id") is None:
-    new_id = db.create_conversation(current_user["id"], title="New Chat")
-    st.session_state["current_chat_id"] = new_id
-    st.session_state["messages"] = [{"role": "assistant", "content": "你好！我是你的 AI 助手。全自动模式已启动，随时待命！"}]
-    db.add_message(new_id, "assistant", "你好！我是你的 AI 助手。全自动模式已启动，随时待命！")
+    user_conversations = db.get_user_conversations(current_user["id"])
+    
+    if user_conversations:
+        # 如果有历史会话，默认加载最新的一个
+        latest_chat = user_conversations[0]
+        st.session_state["current_chat_id"] = latest_chat["id"]
+        # 加载该会话的消息
+        msgs = db.get_conversation_messages(latest_chat["id"])
+        st.session_state["messages"] = msgs if msgs else []
+    else:
+        # 只有在没有任何会话时，才创建新会话
+        new_id = db.create_conversation(current_user["id"], title="New Chat")
+        st.session_state["current_chat_id"] = new_id
+        st.session_state["messages"] = [{"role": "assistant", "content": "你好！我是你的 AI 助手。全自动模式已启动，随时待命！"}]
+        db.add_message(new_id, "assistant", "你好！我是你的 AI 助手。全自动模式已启动，随时待命！")
 
 # --- 初始化本地 LLM ---
 if not api_key:

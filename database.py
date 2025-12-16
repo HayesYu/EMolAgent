@@ -2,7 +2,10 @@ import sqlite3
 import bcrypt
 import os
 from datetime import datetime
+import jwt
+import datetime
 
+SECRET_KEY = "TwinkleTwinkleLittleStar"
 DB_FILE = "data/chat_app.db"
 
 def init_db():
@@ -129,6 +132,26 @@ def get_conversation_messages(conversation_id):
     rows = c.fetchall()
     conn.close()
     return [{"role": r[0], "content": r[1]} for r in rows]
+
+def create_jwt_token(user_id, username):
+    """生成 JWT Token"""
+    payload = {
+        "user_id": user_id,
+        "username": username,
+        "exp": datetime.datetime.utcnow() + datetime.timedelta(days=3) # 过期时间
+    }
+    token = jwt.encode(payload, SECRET_KEY, algorithm="HS256")
+    return token
+
+def verify_jwt_token(token):
+    """验证 Token，成功返回用户信息，失败返回 None"""
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+        return {"id": payload["user_id"], "username": payload["username"]}
+    except jwt.ExpiredSignatureError:
+        return None
+    except jwt.InvalidTokenError:
+        return None
 
 # 初始化数据库
 init_db()
