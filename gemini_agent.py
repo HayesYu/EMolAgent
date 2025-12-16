@@ -35,7 +35,7 @@ if "user" not in st.session_state:
     st.session_state["user"] = None
 
 # 尝试从 Cookie 恢复会话
-if st.session_state["user"] is None:
+if st.session_state["user"] is None and not st.session_state.get("logout_flag", False):
     # 获取 cookie 中的 token
     token = cookie_manager.get("auth_token")
     if token:
@@ -59,6 +59,7 @@ def login_page():
                 if user:
                     st.session_state["user"] = user
                     st.session_state["current_chat_id"] = None # 登录后重置当前会话
+                    st.session_state["logout_flag"] = False
                     token = db.create_jwt_token(user["id"], user["username"])
                     cookie_manager.set("auth_token", token)
                     st.success("登录成功！")
@@ -70,10 +71,13 @@ def login_page():
         with st.form("register_form"):
             new_user = st.text_input("新用户名")
             new_pass = st.text_input("新密码", type="password")
+            confirm_pass = st.text_input("确认密码", type="password")
             submitted = st.form_submit_button("注册")
             if submitted:
-                if new_user and new_pass:
-                    if db.register_user(new_user, new_pass):
+                if new_user and new_pass and confirm_pass:
+                    if new_pass != confirm_pass:
+                        st.error("两次输入的密码不一致")
+                    elif db.register_user(new_user, new_pass):
                         st.success("注册成功！请切换到登录标签页进行登录。")
                     else:
                         st.error("用户名已存在")
@@ -99,6 +103,7 @@ with st.sidebar:
         st.session_state["user"] = None
         st.session_state["messages"] = []
         st.session_state["current_chat_id"] = None
+        st.session_state["logout_flag"] = True
         cookie_manager.delete("auth_token")
         st.rerun()
     

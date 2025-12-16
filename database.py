@@ -4,6 +4,54 @@ import os
 from datetime import datetime
 import jwt
 import datetime
+import time
+import random
+
+class SimpleSnowflake:
+    def __init__(self, datacenter_id=1, worker_id=1):
+        self.datacenter_id = datacenter_id
+        self.worker_id = worker_id
+        self.sequence = 0
+        self.last_timestamp = -1
+        
+        # 位分配 (通常: 1位符号 + 41位时间戳 + 5位数据中心 + 5位机器ID + 12位序列号)
+        self.timestamp_shift = 22
+        self.datacenter_id_shift = 17
+        self.worker_id_shift = 12
+        self.sequence_mask = 0xFFF
+
+    def _current_timestamp(self):
+        return int(time.time() * 1000)
+
+    def next_id(self):
+        timestamp = self._current_timestamp()
+
+        if timestamp < self.last_timestamp:
+            raise Exception("Clock moved backwards!")
+
+        if self.last_timestamp == timestamp:
+            self.sequence = (self.sequence + 1) & self.sequence_mask
+            if self.sequence == 0:
+                # 当前毫秒序列耗尽，等待下一毫秒
+                while timestamp <= self.last_timestamp:
+                    timestamp = self._current_timestamp()
+        else:
+            self.sequence = 0
+
+        self.last_timestamp = timestamp
+
+        # 生成 ID
+        new_id = ((timestamp << self.timestamp_shift) |
+                  (self.datacenter_id << self.datacenter_id_shift) |
+                  (self.worker_id << self.worker_id_shift) |
+                  self.sequence)
+        return new_id
+
+# 初始化生成器
+id_generator = SimpleSnowflake()
+
+def generate_id():
+    return id_generator.next_id()
 
 SECRET_KEY = "TwinkleTwinkleLittleStar"
 DB_FILE = "data/chat_app.db"
@@ -18,14 +66,14 @@ def init_db():
     
     # 用户表
     c.execute('''CREATE TABLE IF NOT EXISTS users (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id INTEGER PRIMARY KEY,
                     username TEXT UNIQUE NOT NULL,
                     password_hash TEXT NOT NULL
                 )''')
     
     # 会话表 (Conversations)
     c.execute('''CREATE TABLE IF NOT EXISTS conversations (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id INTEGER PRIMARY KEY,
                     user_id INTEGER,
                     title TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -34,7 +82,7 @@ def init_db():
     
     # 消息表 (Messages)
     c.execute('''CREATE TABLE IF NOT EXISTS messages (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id INTEGER PRIMARY KEY,
                     conversation_id INTEGER,
                     role TEXT,
                     content TEXT,
@@ -52,8 +100,9 @@ def register_user(username, password):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     hashed = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
+    uid = generate_id()
     try:
-        c.execute("INSERT INTO users (username, password_hash) VALUES (?, ?)", (username, hashed))
+        c.execute("INSERT INTO users (id, username, password_hash) VALUES (?, ?, ?)", (uid, username, hashed))
         conn.commit()
         return True
     except sqlite3.IntegrityError:
@@ -81,8 +130,9 @@ def create_conversation(user_id, title="New Chat"):
     """创建新会话"""
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute("INSERT INTO conversations (user_id, title) VALUES (?, ?)", (user_id, title))
-    cid = c.lastrowid
+    cid = generate_id()
+    c.execute("INSERT INTO conversations (id, user_id, title) VALUES (?, ?, ?)", 
+              (cid, user_id, title))
     conn.commit()
     conn.close()
     return cid
@@ -119,8 +169,9 @@ def add_message(conversation_id, role, content):
     """添加一条消息"""
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute("INSERT INTO messages (conversation_id, role, content) VALUES (?, ?, ?)", 
-              (conversation_id, role, content))
+    mid = generate_id()
+    c.execute("INSERT INTO messages (id, conversation_id, role, content) VALUES (?, ?, ?, ?)", 
+              (mid, conversation_id, role, content))
     conn.commit()
     conn.close()
 
