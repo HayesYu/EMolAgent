@@ -20,7 +20,7 @@ os.environ["HTTPS_PROXY"] = "http://127.0.0.1:7890"
 DEFAULT_MODEL_PATH = "/home/hayes/EMolAgent_demo/nnenv.iter147201.pth"
 
 # --- 页面配置 ---
-st.set_page_config(page_title="EMol-Vis Local Agent", page_icon="🧪", layout="wide")
+st.set_page_config(page_title="EMolAgent", page_icon="🧪", layout="wide")
 
 def get_manager():
     return stx.CookieManager()
