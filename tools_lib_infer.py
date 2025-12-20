@@ -32,6 +32,27 @@ from emoles.utils import (
 from emoles.inference.common_tools import atom_2_smile, calculate_esp_from_dm, extract_model_params
 from emoles.py3Dmol import cubes_2_htmls
 
+from typing import List, Tuple, Dict, Union
+import random
+from scipy.spatial import ConvexHull
+from ase import Atoms
+from ase.io import write
+from rdkit import Chem
+try:
+    from emoles.build.CombineMols3D import (
+        get_bond_length,
+        calculate_intermolecular_repulsion,
+        DEFAULT_CLASH_FACTOR,
+    )
+    from emoles.build.patch_picker import (
+        get_patch_atoms_and_indices,
+        atom_2_mol,
+    )
+except ImportError:
+    print("Warning: emoles.build not found. Cluster building features will fail if called.")
+
+CLASH_PENALTY_FOR_SCORING = 1e10
+
 def cal_orbital_and_energies(overlap_matrix, full_hamiltonian):
     """
     Solve generalized eigenvalue problem HC = SCE.
@@ -370,3 +391,315 @@ def get_ham_info_from_npy(ase_db_path,
 
     second_per_item = (end_time - start_time) / max(1, len(all_ham_info))
     return f"电子结构分析完成。\nCSV报告: {output_csv_path}\nHOMO/LUMO数据与Cube文件已生成。"
+
+def is_xyz_path(text: str) -> bool:
+    return isinstance(text, str) and text.lower().endswith(".xyz")
+
+def make_cache_key(identifier: Union[str, Atoms, Chem.Mol]) -> str:
+    if isinstance(identifier, str):
+        return f"XYZ:{identifier}" if is_xyz_path(identifier) else f"SMILES:{identifier}"
+    if isinstance(identifier, Atoms):
+        return f"ASE@{id(identifier)}"
+    if isinstance(identifier, Chem.Mol):
+        return f"RDKIT@{id(identifier)}"
+    raise TypeError(f"Unsupported identifier type for cache key: {type(identifier)}")
+
+def fibonacci_sphere(samples: int, radius: float, center: np.ndarray) -> np.ndarray:
+    points = np.empty((samples, 3))
+    phi = np.pi * (np.sqrt(5.) - 1.)
+    denom = float(max(1, samples - 1))
+    for i in range(samples):
+        y = 1.0 - (i / denom) * 2.0
+        r_xy = np.sqrt(max(0.0, 1.0 - y * y))
+        theta = phi * i
+        points[i] = [np.cos(theta) * r_xy, y, np.sin(theta) * r_xy]
+        if not np.all(np.isfinite(points[i])):
+            points[i] = np.array([0.0, 1.0 - (i / denom) * 2.0, 0.0])
+    return points * radius + center
+
+def calculate_ligand_interactions(ion_atoms, all_ligands, current_lig_idx, clash_penalty=CLASH_PENALTY_FOR_SCORING):
+    eval_lig = all_ligands[current_lig_idx]
+    total_repulsion_score = 0.0
+    any_clash_detected = False
+
+    # Interaction with ion
+    rep_val_ion, clash_ion = calculate_intermolecular_repulsion(ion_atoms, eval_lig)
+    if clash_ion:
+        any_clash_detected = True
+        total_repulsion_score += clash_penalty
+    else:
+        total_repulsion_score += rep_val_ion
+
+    # Interaction with other ligands
+    for i, other_lig in enumerate(all_ligands):
+        if i == current_lig_idx:
+            continue
+        rep_val_pair, clash_pair = calculate_intermolecular_repulsion(eval_lig, other_lig)
+        if clash_pair:
+            any_clash_detected = True
+            total_repulsion_score += clash_penalty
+        else:
+            total_repulsion_score += rep_val_pair
+
+    return total_repulsion_score, any_clash_detected
+
+def check_system_clashes(ion_atoms: Atoms, all_ligands: List[Atoms]) -> bool:
+    if any(calculate_intermolecular_repulsion(ion_atoms, lig)[1] for lig in all_ligands):
+        return True
+    for i in range(len(all_ligands)):
+        for j in range(i + 1, len(all_ligands)):
+            if calculate_intermolecular_repulsion(all_ligands[i], all_ligands[j])[1]:
+                return True
+    return False
+
+def method_convex_hull_volume(atoms: Atoms) -> float:
+    pts = atoms.get_positions()
+    if len(pts) < 4:
+        return 1.0
+    hull = ConvexHull(pts)
+    return float(hull.volume)
+
+def get_ase_and_patch(identifier, relative_score_threshold, max_patch_atoms, verbose):
+    if isinstance(identifier, str) and is_xyz_path(identifier):
+        ase_obj = read(identifier)
+        ase_obj = ase_obj if isinstance(ase_obj, Atoms) else ase_obj[0]
+        ase_res, patch_idx = get_patch_atoms_and_indices(
+            ase_obj,
+            relative_score_threshold=relative_score_threshold,
+            max_patch_atoms=max_patch_atoms,
+            verbose=verbose,
+        )
+        return ase_res, patch_idx
+
+    ase_res, patch_idx = get_patch_atoms_and_indices(
+        identifier,
+        relative_score_threshold=relative_score_threshold,
+        max_patch_atoms=max_patch_atoms,
+        verbose=verbose,
+    )
+    return ase_res, patch_idx
+
+def prepare_ion(ion_identifier, relative_score_threshold, verbose):
+    ion_ase, _ = get_ase_and_patch(
+        ion_identifier,
+        relative_score_threshold=relative_score_threshold,
+        max_patch_atoms=1,
+        verbose=verbose,
+    )
+    ion_center = ion_ase.positions[0] if len(ion_ase) > 0 else np.array([0.0, 0.0, 0.0])
+    ion_symbol = ion_ase.get_chemical_symbols()[0] if len(ion_ase) > 0 else "X"
+    return ion_ase, ion_center, ion_symbol
+
+def build_ligand_templates(ligand_molecule_info, ion_symbol, relative_score_threshold, max_patch_atoms, verbose):
+    cache = {}
+    templates = []
+    
+    for key_obj, count in ligand_molecule_info:
+        cache_key = make_cache_key(key_obj)
+        if cache_key not in cache:
+            mol_ase, patch_indices = get_ase_and_patch(
+                key_obj,
+                relative_score_threshold=relative_score_threshold,
+                max_patch_atoms=max_patch_atoms,
+                verbose=verbose,
+            )
+            if len(patch_indices) == 0:
+                raise ValueError(f"No patch atoms found for ligand: {key_obj}")
+
+            patch_atom_coords = mol_ase.get_positions()[patch_indices]
+            patch_centroid_local = np.mean(patch_atom_coords, axis=0)
+
+            ideal_distances = [
+                get_bond_length(ion_symbol, mol_ase.get_chemical_symbols()[idx], skin=0)
+                for idx in patch_indices
+            ]
+            avg_ideal_dist = float(np.mean(ideal_distances)) if ideal_distances else get_bond_length(
+                ion_symbol, mol_ase.get_chemical_symbols()[0], skin=0
+            )
+            cache[cache_key] = (mol_ase, patch_indices, patch_centroid_local, avg_ideal_dist)
+
+        mol_ase, patch_indices, centroid, avg_dist = cache[cache_key]
+        for _ in range(count):
+            templates.append((mol_ase.copy(), list(patch_indices), centroid.copy(), float(avg_dist), key_obj))
+    return templates
+
+def place_ligands_initial(ion_center, ligand_templates, sphere_dist_factor, orientation_mode):
+    total = len(ligand_templates)
+    if total == 0:
+        return [], np.zeros((0, 3))
+
+    volumes = [max(method_convex_hull_volume(tpl[0]), 1e-12) for tpl in ligand_templates]
+    vol_ref = float(np.max(volumes)) if len(volumes) > 0 else 1.0
+
+    volume_scales = []
+    for v in volumes:
+        raw = (vol_ref / max(v, 1e-12)) ** (1.0 / 8.0)
+        volume_scales.append(float(raw))
+
+    base_target_distances = [tpl[3] * sphere_dist_factor for tpl in ligand_templates]
+    target_distances = [base_target_distances[i] * volume_scales[i] for i in range(total)]
+
+    directions = fibonacci_sphere(total, radius=1.0, center=np.array([0.0, 0.0, 0.0]))
+
+    ligands = []
+    target_centroids = np.empty((total, 3))
+
+    for i, (ase_mol, patch_indices, centroid_local, _, _) in enumerate(ligand_templates):
+        lig = ase_mol.copy()
+        target = ion_center + directions[i] * target_distances[i]
+        target_centroids[i] = target
+
+        lig.translate(target - centroid_local)
+
+        if orientation_mode == "random" or len(lig) == 1:
+            axis = np.random.rand(3) - 0.5
+            norm = np.linalg.norm(axis)
+            axis = axis / norm if norm > 1e-8 else np.array([1.0, 0.0, 0.0])
+            lig.rotate(np.random.uniform(0.0, 360.0), axis, center=target)
+        elif orientation_mode == "aligned_to_ion" and patch_indices:
+            primary_patch_pos = lig.positions[patch_indices[0]]
+            v_centroid_to_patch = primary_patch_pos - target
+            v_ion_to_centroid = target - ion_center
+            if np.linalg.norm(v_centroid_to_patch) > 1e-8 and np.linalg.norm(v_ion_to_centroid) > 1e-8:
+                lig.rotate(v_centroid_to_patch, -v_ion_to_centroid, center=target)
+        ligands.append(lig)
+    return ligands, target_centroids
+
+def optimize_ligand_orientations(ion_atoms, ligands, rotation_centers, rotation_opt_iterations, rotation_samples_per_ligand, verbose):
+    total = len(ligands)
+    for rot_iter in range(rotation_opt_iterations):
+        order = list(range(total))
+        random.shuffle(order)
+        improvements = 0
+
+        for idx in order:
+            current = ligands[idx]
+            center = rotation_centers[idx]
+            base_score, _ = calculate_ligand_interactions(ion_atoms, ligands, idx)
+
+            best_local = current.copy()
+            best_score = base_score
+
+            for _ in range(rotation_samples_per_ligand):
+                trial = current.copy()
+                axis = np.random.rand(3) - 0.5
+                norm = np.linalg.norm(axis)
+                axis = axis / norm if norm > 1e-8 else np.array([1.0, 0.0, 0.0])
+                trial.rotate(np.random.uniform(0.0, 360.0), axis, center=center)
+
+                tmp = list(ligands)
+                tmp[idx] = trial
+                trial_score, _ = calculate_ligand_interactions(ion_atoms, tmp, idx)
+
+                if trial_score < best_score:
+                    best_score = trial_score
+                    best_local = trial.copy()
+
+            if best_score < base_score - 1e-6:
+                improvements += 1
+            ligands[idx] = best_local
+
+        if improvements == 0 and rot_iter > min(5, rotation_opt_iterations // 3):
+            break
+    return ligands
+
+def evaluate_configuration(ion_atoms, ligands):
+    has_clashes = check_system_clashes(ion_atoms, ligands)
+    total_score = 0.0
+    for k in range(len(ligands)):
+        sc, _ = calculate_ligand_interactions(ion_atoms, ligands, k)
+        total_score += sc
+    return has_clashes, total_score
+
+def build_cluster(
+        ion_identifier,
+        ligand_molecule_info,
+        relative_score_threshold=0.7,
+        max_patch_atoms=3,
+        initial_sphere_skin_factor=1.0,
+        sphere_skin_increment_factor=0.05,
+        max_sphere_expansions=10,
+        target_no_clashes=True,
+        rotation_opt_iterations=30,
+        rotation_samples_per_ligand=50,
+        initial_ligand_orientation="random",
+        verbose=True,
+):
+    ase_ion, ion_center, ion_symbol = prepare_ion(ion_identifier, relative_score_threshold, verbose)
+    ligand_templates = build_ligand_templates(ligand_molecule_info, ion_symbol, relative_score_threshold, max_patch_atoms, verbose)
+    
+    if len(ligand_templates) == 0:
+        return ase_ion
+
+    best_config = []
+    best_score = float("inf")
+    best_has_clash = True
+
+    sphere_factor = initial_sphere_skin_factor
+    for attempt in range(max_sphere_expansions):
+        placed, centers = place_ligands_initial(ion_center, ligand_templates, sphere_factor, initial_ligand_orientation)
+        placed = optimize_ligand_orientations(ase_ion, placed, centers, rotation_opt_iterations, rotation_samples_per_ligand, verbose)
+        has_clashes, total_score = evaluate_configuration(ase_ion, placed)
+
+        improved = (
+                best_config == []
+                or (not has_clashes and best_has_clash)
+                or (not has_clashes and not best_has_clash and total_score < best_score)
+                or (has_clashes and best_has_clash and not target_no_clashes and total_score < best_score)
+        )
+        if improved:
+            best_config = [lig.copy() for lig in placed]
+            best_score = total_score
+            best_has_clash = has_clashes
+
+        if target_no_clashes and not best_has_clash:
+            break
+        sphere_factor += sphere_skin_increment_factor
+
+    final_cluster = ase_ion.copy()
+    for lig in best_config:
+        final_cluster.extend(lig)
+
+    return final_cluster
+
+def build_cluster_db_from_smiles(
+    ion_smiles: str, 
+    ligands_list: List[Dict], # format: [{"smiles": "CCO", "count": 2}, ...]
+    output_dir: str,
+    db_filename: str = "generated_cluster.db"
+) -> str:
+    """
+    Agent 工具入口：根据 SMILES 构建团簇并保存为 ASE DB。
+    """
+    try:
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # 1. 转换 ligands_list 为 build_cluster 需要的格式 [(smiles, count), ...]
+        ligand_molecule_info = []
+        for item in ligands_list:
+            smiles = item.get("smiles")
+            count = int(item.get("count", 1))
+            if smiles:
+                ligand_molecule_info.append((smiles, count))
+        
+        # 2. 调用核心构建逻辑
+        cluster_atoms = build_cluster(
+            ion_identifier=ion_smiles,
+            ligand_molecule_info=ligand_molecule_info,
+            verbose=False # Agent 调用时保持安静
+        )
+        
+        # 3. 保存为 ase.db
+        db_path = os.path.join(output_dir, db_filename)
+        # 如果文件已存在，先删除，保证是从头写入
+        if os.path.exists(db_path):
+            os.remove(db_path)
+            
+        with connect(db_path) as db:
+            db.write(cluster_atoms, data={"source": "agent_build", "ion": ion_smiles})
+            
+        return f"团簇构建成功。\n包含原子数: {len(cluster_atoms)}\n已保存至数据库: {db_path}"
+
+    except Exception as e:
+        traceback.print_exc()
+        return f"构建团簇失败: {str(e)}"

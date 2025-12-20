@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import datetime
 import pandas as pd
 import streamlit as st
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -11,20 +12,20 @@ from langchain.tools import StructuredTool
 from langchain.callbacks import StreamlitCallbackHandler
 import extra_streamlit_components as stx
 
-from tools_lib_infer import dptb_infer_from_ase_db, get_ham_info_from_npy
+from tools_lib_infer import dptb_infer_from_ase_db, get_ham_info_from_npy, build_cluster_db_from_smiles
 import database as db
 
 os.environ["NO_PROXY"] = "localhost,127.0.0.1,0.0.0.0"
 os.environ["HTTP_PROXY"] = "http://127.0.0.1:7890"
 os.environ["HTTPS_PROXY"] = "http://127.0.0.1:7890"
 
-DEFAULT_MODEL_PATH = "/home/hayes/EMolAgent_demo/nnenv.iter147201.pth"
+DEFAULT_MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nnenv.iter147201.pth")
 
 # --- 页面配置 ---
 st.set_page_config(page_title="EMolAgent", page_icon="🧪", layout="wide")
 
 def get_manager():
-    return stx.CookieManager()
+    return stx.CookieManager(key="auth_cookie_manager")
 
 cookie_manager = get_manager()
 
@@ -62,8 +63,10 @@ def login_page():
                     st.session_state["current_chat_id"] = None # 登录后重置当前会话
                     st.session_state["logout_flag"] = False
                     token = db.create_jwt_token(user["id"], user["username"])
-                    cookie_manager.set("auth_token", token)
+                    expires = datetime.datetime.now() + datetime.timedelta(days=3)
+                    cookie_manager.set("auth_token", token, expires_at=expires)
                     st.success("登录成功！")
+                    time.sleep(0.5)
                     st.rerun()
                 else:
                     st.error("用户名或密码错误")
@@ -218,8 +221,33 @@ def get_user_workspace():
         os.makedirs(workspace, exist_ok=True)
     return workspace
 
+def build_cluster_tool(ion_smiles: str, ligands_json: str):
+    """Step 1 (Optional): 从 SMILES 构建团簇"""
+    try:
+        if isinstance(ligands_json, str):
+            ligands_list = json.loads(ligands_json)
+        else:
+            ligands_list = ligands_json
+            
+        user_ws = get_user_workspace()
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        task_dir = os.path.join(user_ws, f"task_{timestamp}")
+        
+        result_msg = build_cluster_db_from_smiles(
+            ion_smiles=ion_smiles, 
+            ligands_list=ligands_list, 
+            output_dir=task_dir
+        )
+        
+        # 提取 db 路径用于提示下一步
+        db_path = os.path.join(task_dir, "generated_cluster.db")
+        
+        return f"{result_msg}\n\n【Next Step】请将生成的数据库路径 `{db_path}` 传递给 Run_Inference 工具。"
+    except Exception as e:
+        return f"参数解析错误或构建失败: {str(e)}"
+
 def run_inference_tool(ase_db_path, model_path=None):
-    """Step 1: 运行推理生成哈密顿量 NPY"""
+    """Step 2: 运行推理生成哈密顿量 NPY"""
     if model_path in ["None", "null", "", None]:
         model_path = DEFAULT_MODEL_PATH
         st.toast(f"ℹ️ 已自动加载默认模型: {os.path.basename(model_path)}")
@@ -228,21 +256,38 @@ def run_inference_tool(ase_db_path, model_path=None):
     validate_path_exists(model_path, "模型文件")
 
     user_ws = get_user_workspace()
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    input_dir = os.path.dirname(os.path.abspath(ase_db_path))
+    folder_name = os.path.basename(input_dir)
     
+    if folder_name.startswith("task_") and os.path.dirname(input_dir) == os.path.abspath(user_ws):
+        task_root = input_dir
+    else:
+        # 2. 否则（例如用户上传的文件），创建一个新的 task 目录
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        task_root = os.path.join(user_ws, f"task_{timestamp}")
+
     # 定义输出目录
-    output_dir = os.path.join(user_ws, f"task_{timestamp}")
-    result_msg = dptb_infer_from_ase_db(ase_db_path, output_dir, model_path)
+    infer_output_dir = os.path.join(task_root, "inference")
     
-    return f"{result_msg}\n\n【Next Step】请将 NPY 路径 `{os.path.join(output_dir, 'npy')}` 传递给 Analyze_Electronic_Structure 工具。"
+    result_msg = dptb_infer_from_ase_db(ase_db_path, infer_output_dir, model_path)
+    
+    # 提示用户下一步的路径
+    npy_path = os.path.join(infer_output_dir, 'npy')
+    
+    return f"{result_msg}\n\n【Next Step】请将 NPY 路径 `{npy_path}` 传递给 Analyze_Electronic_Structure 工具。"
 
 def analyze_electronic_structure_tool(ase_db_path, npy_folder_path):
-    """Step 2: 分析电子结构 (HOMO/LUMO/Gap)"""
+    """Step 3: 分析电子结构 (HOMO/LUMO/Gap)"""
+    ase_db_path = os.path.abspath(ase_db_path)
+    npy_folder_path = os.path.abspath(npy_folder_path)
+
     validate_path_exists(ase_db_path, "ASE数据库")
     validate_path_exists(npy_folder_path, "NPY文件夹")
 
-    npy_parent = os.path.dirname(npy_folder_path) # task_TIMESTAMP
-    work_dir = os.path.join(npy_parent, "ham_analysis")
+    # npy_parent = os.path.dirname(npy_folder_path) # task_TIMESTAMP
+    # work_dir = os.path.join(npy_parent, "ham_analysis")
+    task_root = os.path.dirname(ase_db_path)
+    work_dir = os.path.join(task_root, "ham_analysis")
     os.makedirs(work_dir, exist_ok=True)
     
     # 切换目录，在 os.getcwd() 下生成 summary CSV
@@ -284,31 +329,39 @@ def analyze_electronic_structure_tool(ase_db_path, npy_folder_path):
 
 tools = [
     StructuredTool.from_function(
+        func=build_cluster_tool,
+        name="Build_Cluster_From_SMILES",
+        description="Step 1. Build a molecular cluster from SMILES. Args: ion_smiles (str), ligands_json (List[Dict] e.g. [{'smiles': 'CCO', 'count': 2}])."
+    ),
+    StructuredTool.from_function(
         func=run_inference_tool,
         name="Run_Inference",
-        description="Step 1. Run DPTB inference to generate Hamiltonian NPY files."
+        description="Step 2. Run DPTB inference using an ase.db file path."
     ),
     StructuredTool.from_function(
         func=analyze_electronic_structure_tool,
         name="Analyze_Electronic_Structure",
-        description="Step 2. Calculate HOMO/LUMO/Gap from Hamiltonian NPY files."
+        description="Step 3. Calculate HOMO/LUMO/Gap from Hamiltonian NPY files."
     )
 ]
 
 # --- 初始化 Agent ---
 
 custom_system_prefix = """
-你是一个计算化学 AI 助手。请按顺序执行以下步骤：
+你是一个计算化学 AI 助手。请按步骤执行：
 
-1. **Run_Inference**: 
-   - 输入用户的 ase.db 文件路径。
-   - 运行模型推理，生成哈密顿量矩阵 (.npy)。
-   - 工具会返回一个 NPY 文件夹路径。
+1. **Build_Cluster_From_SMILES**:
+   - 输入中心离子 (如 "Li") 和配体列表 (如 [{{"smiles": "CCO", "count": 2}}])。
+   - 生成团簇并保存为 ase.db。
+   - 获得生成的 db 文件路径。
 
-2. **Analyze_Electronic_Structure**: 
-   - 输入 ase.db 和上一步获得的 NPY 文件夹路径。
-   - 计算电子结构性质：HOMO, LUMO, Gap (能隙)。
-   - 工具会返回 JSON 格式的分析结果。
+2. **Run_Inference**:
+   - 使用上一步生成的 ase.db 文件路径。
+   - 运行推理，生成 NPY。
+
+3. **Analyze_Electronic_Structure**:
+   - 使用 ase.db 和 NPY 文件夹。
+   - 分析电子结构。
 
 【响应规则】
 - 请直接根据返回的 JSON 数据回答用户的 HOMO/LUMO/Gap 结果。
