@@ -24,6 +24,8 @@ DEFAULT_MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "n
 # --- 页面配置 ---
 st.set_page_config(page_title="EMolAgent", page_icon="🧪", layout="wide")
 
+db.cleanup_old_data(days=30)
+
 def get_manager():
     return stx.CookieManager(key="auth_cookie_manager")
 

@@ -79,6 +79,11 @@ def init_db():
                     FOREIGN KEY(user_id) REFERENCES users(id)
                 )''')
     
+    try:
+        c.execute("ALTER TABLE conversations ADD COLUMN updated_at TIMESTAMP")
+    except sqlite3.OperationalError:
+        pass # 字段可能已存在，忽略错误
+
     # 消息表 (Messages)
     c.execute('''CREATE TABLE IF NOT EXISTS messages (
                     id INTEGER PRIMARY KEY,
@@ -171,6 +176,7 @@ def add_message(conversation_id, role, content):
     mid = generate_id()
     c.execute("INSERT INTO messages (id, conversation_id, role, content) VALUES (?, ?, ?, ?)", 
               (mid, conversation_id, role, content))
+    c.execute("UPDATE conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", (conversation_id,))
     conn.commit()
     conn.close()
 
@@ -203,5 +209,40 @@ def verify_jwt_token(token):
     except jwt.InvalidTokenError:
         return None
 
-# 初始化数据库
+def cleanup_old_data(days=30):
+    """
+    清理逻辑：
+    1. 删除 N 天前的消息 (根据消息自身的时间戳)。
+    2. 删除 N 天前且不活跃的会话 (根据 updated_at 或 created_at)。
+    """
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    
+    # 计算截止时间 (使用 UTC 时间以匹配 SQL 的 CURRENT_TIMESTAMP)
+    cutoff_date = datetime.datetime.utcnow() - datetime.timedelta(days=days)
+    
+    try:
+        # 1. 删除过期的消息
+        # 只要消息产生时间超过30天就删，不管它属于哪个会话
+        c.execute("DELETE FROM messages WHERE timestamp < ?", (cutoff_date,))
+        deleted_msgs = c.rowcount
+        
+        # 2. 删除过期的会话
+        # 逻辑：如果 updated_at 存在，判断 updated_at；如果不存在(旧数据)，判断 created_at
+        # 只有当两者都早于截止时间时，才认为该会话已“死”
+        c.execute("""
+            DELETE FROM conversations 
+            WHERE COALESCE(updated_at, created_at) < ?
+        """, (cutoff_date,))
+        deleted_convs = c.rowcount
+        
+        # 同时清理属于被删会话的孤儿消息（以防万一有遗漏）
+        c.execute("DELETE FROM messages WHERE conversation_id NOT IN (SELECT id FROM conversations)")
+        
+        conn.commit()
+    except Exception as e:
+        print(f"Cleanup error: {e}")
+    finally:
+        conn.close()
+
 init_db()
