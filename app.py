@@ -2,6 +2,7 @@ import os
 import json
 import time
 import datetime
+import re
 import pandas as pd
 import streamlit as st
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -12,7 +13,7 @@ from langchain.tools import StructuredTool
 from langchain.callbacks import StreamlitCallbackHandler
 import extra_streamlit_components as stx
 
-from tools_lib_infer import dptb_infer_from_ase_db, get_ham_info_from_npy, build_cluster_db_from_smiles
+from tools_lib_infer import dptb_infer_from_ase_db, get_ham_info_from_npy, build_cluster_db_from_smiles, compress_directory
 import database as db
 
 os.environ["NO_PROXY"] = "localhost,127.0.0.1,0.0.0.0"
@@ -296,6 +297,8 @@ def analyze_electronic_structure_tool(ase_db_path, npy_folder_path):
     original_cwd = os.getcwd()
     os.chdir(work_dir)
     
+    zip_path = ""
+    
     try:
         result_str = get_ham_info_from_npy(
             ase_db_path=ase_db_path, 
@@ -318,6 +321,10 @@ def analyze_electronic_structure_tool(ase_db_path, npy_folder_path):
                 json_content = "(JSON读取失败)"
         else:
             json_content = "(未找到 ham_summary.json)"
+
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        zip_base_name = os.path.join(task_root, f"analysis_result_{timestamp}")
+        zip_path = compress_directory(work_dir, zip_base_name)
             
     finally:
         os.chdir(original_cwd) # 恢复目录
@@ -326,6 +333,7 @@ def analyze_electronic_structure_tool(ase_db_path, npy_folder_path):
         f"{result_str}\n"
         f"--------------------------------------------------\n"
         f"【电子结构分析结果】\n{json_content}\n"
+        f"[[DOWNLOAD:{zip_path}]]\n"
         f"请向用户展示前几个分子的 HOMO/LUMO/Gap 数据，并告知 CSV 和 Cube 文件位置 ({work_dir})。"
     )
 
@@ -368,6 +376,7 @@ custom_system_prefix = """
 【响应规则】
 - 请直接根据返回的 JSON 数据回答用户的 HOMO/LUMO/Gap 结果。
 - 告知用户结果已保存为 CSV，且相关的 Cube 轨道文件已生成，文件夹内含 html 文件可用于可视化。
+- 如果工具返回结果中包含 `[[DOWNLOAD:路径]]` 标记，请务必在你的最终回复中原样保留该标记（不要修改路径），以便 UI 能够生成下载按钮。
 - 你的最后一句必须是："任务已完成。"
 - 如果出错请结束任务。
 """
@@ -385,9 +394,29 @@ agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True, max_itera
 # --- 聊天区域显示 ---
 st.title("🧪 EMolAgent")
 
-# 显示当前会话的消息
-for msg in st.session_state["messages"]:
-    st.chat_message(msg["role"]).write(msg["content"])
+for idx, msg in enumerate(st.session_state["messages"]):
+    with st.chat_message(msg["role"]):
+        content = msg["content"]
+        
+        # 解析下载标记
+        download_match = re.search(r"\[\[DOWNLOAD:(.*?)\]\]", content)
+        # 将标记从显示文本中移除，保持界面整洁
+        display_text = re.sub(r"\[\[DOWNLOAD:.*?\]\]", "", content).strip()
+        
+        st.write(display_text)
+        
+        # 如果存在文件标记且文件存在，显示下载按钮
+        if download_match:
+            file_path = download_match.group(1)
+            if os.path.exists(file_path):
+                with open(file_path, "rb") as f:
+                    st.download_button(
+                        label="📦 下载分析结果压缩包 (.zip)",
+                        data=f,
+                        file_name=os.path.basename(file_path),
+                        mime="application/zip",
+                        key=f"history_btn_{idx}"  # 必须设置唯一的 key
+                    )
 
 # --- 处理用户输入 ---
 if prompt_input := st.chat_input("请输入指令..."):
@@ -425,8 +454,20 @@ if prompt_input := st.chat_input("请输入指令..."):
                 config={"callbacks": [st_callback]}
             )
             output_text = response["output"]
-            
-            st.write(output_text)
+            download_match = re.search(r"\[\[DOWNLOAD:(.*?)\]\]", output_text)
+            clean_text = re.sub(r"\[\[DOWNLOAD:.*?\]\]", "", output_text).strip()
+            st.write(clean_text)
+            if download_match:
+                file_path = download_match.group(1)
+                if os.path.exists(file_path):
+                    with open(file_path, "rb") as f:
+                        st.download_button(
+                            label="📦 下载分析结果压缩包 (.zip)",
+                            data=f,
+                            file_name=os.path.basename(file_path),
+                            mime="application/zip",
+                            key="current_run_btn"
+                        )
             
             # 5. 保存 AI 回复
             st.session_state.messages.append({"role": "assistant", "content": output_text})

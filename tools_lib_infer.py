@@ -703,3 +703,12 @@ def build_cluster_db_from_smiles(
     except Exception as e:
         traceback.print_exc()
         return f"构建团簇失败: {str(e)}"
+
+def compress_directory(dir_path: str, output_path_base: str) -> str:
+    """
+    压缩文件夹
+    :param dir_path: 要压缩的文件夹路径
+    :param output_path_base: 输出文件路径（不含后缀，例如 /tmp/res），函数会自动添加 .zip
+    :return: 压缩文件的完整路径
+    """
+    return shutil.make_archive(output_path_base, 'zip', dir_path)
