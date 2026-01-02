@@ -16,11 +16,11 @@ import extra_streamlit_components as stx
 from tools_lib_infer import dptb_infer_from_ase_db, get_ham_info_from_npy, build_cluster_db_from_smiles, compress_directory
 import database as db
 
-os.environ["NO_PROXY"] = "localhost,127.0.0.1,0.0.0.0"
-os.environ["HTTP_PROXY"] = "http://127.0.0.1:7890"
-os.environ["HTTPS_PROXY"] = "http://127.0.0.1:7890"
+#os.environ["NO_PROXY"] = "localhost,127.0.0.1,0.0.0.0"
+#os.environ["HTTP_PROXY"] = "http://127.0.0.1:7890"
+#os.environ["HTTPS_PROXY"] = "http://127.0.0.1:7890"
 
-DEFAULT_MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nnenv.iter147201.pth")
+DEFAULT_MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nnenv.ep154.pth")
 
 # --- 页面配置 ---
 st.set_page_config(page_title="EMolAgent", page_icon="🧪", layout="wide")
