@@ -5,7 +5,7 @@ import shutil
 import traceback
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional, Union, Any
-from contextlib import ExitStack
+
 from ase import Atoms
 from ase.db import connect
 from ase.io import write
@@ -291,12 +291,7 @@ def build_from_plan(
         show_progress: bool,
 ) -> Dict[str, int]:
     stats = {'attempted': 0, 'built': 0, 'failed': 0, 'SSIP': 0, 'CIP': 0, 'AGG': 0}
-    with ExitStack() as stack:
-        # 打开所有数据库连接，并注册到 stack 中
-        db_handles = {
-            cat: stack.enter_context(connect(out_dirs[cat]['db'])) 
-            for cat in ['SSIP', 'CIP', 'AGG', 'ALL']
-        }
+    db_handles = {cat: connect(out_dirs[cat]['db']) for cat in ['SSIP', 'CIP', 'AGG', 'ALL']}
 
     total_items = sum(len(plan.get(cat, [])) for cat in ['SSIP', 'CIP', 'AGG'])
     if show_progress:
