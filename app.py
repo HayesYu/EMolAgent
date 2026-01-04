@@ -30,6 +30,14 @@ DEFAULT_MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "n
 # --- 页面配置 ---
 st.set_page_config(page_title="EMolAgent", page_icon="🧪", layout="wide")
 
+WELCOME_MESSAGE = """您好！我是 EMolAgent，您的计算化学 AI 助手。
+
+我专注于分子团簇的自动化建模与电子结构推断。我的工作流涵盖了从本地数据库检索分子、构建并优化团簇结构，到最终预测 HOMO/LUMO、偶极矩及静电势等关键性质。
+
+请告诉我您想研究的体系配置，例如：“请构建一个包含 1个Li离子、3个DME分子 和 1个FSI阴离子 的团簇。”
+
+收到指令后，我将为您自动执行查库、建模及计算流程。"""
+
 db.cleanup_old_data(days=30)
 
 def get_manager():
@@ -125,9 +133,9 @@ with st.sidebar:
     if st.button("➕ 新建对话", type="primary", use_container_width=True):
         new_id = db.create_conversation(current_user["id"], title="New Chat")
         st.session_state["current_chat_id"] = new_id
-        st.session_state["messages"] = [{"role": "assistant", "content": "你好！我是你的 AI 助手，全自动分子分析模式已就绪。"}]
+        st.session_state["messages"] = [{"role": "assistant", "content": WELCOME_MESSAGE}]
         # 存入初始欢迎语到数据库
-        db.add_message(new_id, "assistant", "你好！我是你的 AI 助手，全自动分子分析模式已就绪。")
+        db.add_message(new_id, "assistant", WELCOME_MESSAGE)
         st.rerun()
 
     st.markdown("### 🕒 历史记录")
@@ -188,8 +196,8 @@ if st.session_state.get("current_chat_id") is None:
         # 只有在没有任何会话时，才创建新会话
         new_id = db.create_conversation(current_user["id"], title="New Chat")
         st.session_state["current_chat_id"] = new_id
-        st.session_state["messages"] = [{"role": "assistant", "content": "你好！我是你的 AI 助手，全自动分子分析模式已就绪。"}]
-        db.add_message(new_id, "assistant", "你好！我是你的 AI 助手，全自动分子分析模式已就绪。")
+        st.session_state["messages"] = [{"role": "assistant", "content": WELCOME_MESSAGE}]
+        db.add_message(new_id, "assistant", WELCOME_MESSAGE)
 
 # --- 初始化本地 LLM ---
 if not api_key:
