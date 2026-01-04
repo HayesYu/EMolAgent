@@ -6,8 +6,9 @@ import traceback
 import re
 import pandas as pd
 import torch
+import numpy as np
 from ase.db import connect
-
+from emoles.py3Dmol import cube_2_html, cubes_2_htmls
 import cluster_factory
 from emoles.inference import infer_entry
 
@@ -16,6 +17,16 @@ from emoles.inference import infer_entry
 # ==========================================
 SOLVENT_DB_PATH = "cut_10_common.db" 
 ANION_DB_PATH = "anions.db"
+
+class NumpyEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super(NumpyEncoder, self).default(obj)
 
 # ==========================================
 # 数据库搜索工具 (Search)
@@ -237,6 +248,9 @@ def run_dm_infer_pipeline(ase_db_path: str, model_path: str, output_dir: str):
     3. Hamiltonian Analysis -> 生成 Cube, HOMO/LUMO
     """
     try:
+        os.environ["LC_ALL"] = "C"
+        os.environ["LANG"] = "C"
+
         # 转换为绝对路径，防止 chdir 后失效
         ase_db_path = os.path.abspath(ase_db_path)
         output_dir = os.path.abspath(output_dir)
@@ -246,7 +260,7 @@ def run_dm_infer_pipeline(ase_db_path: str, model_path: str, output_dir: str):
         original_cwd = os.getcwd()
         
         try:
-            # 【关键修改】切换到输出目录，确保所有工具的隐式输出（如 ham_analysis）都保存在此处
+            # 切换到输出目录，确保所有工具的隐式输出（如 ham_analysis）都保存在此处
             os.chdir(output_dir)
 
             # ---------------------------
@@ -295,6 +309,13 @@ def run_dm_infer_pipeline(ase_db_path: str, model_path: str, output_dir: str):
                 summary_filename="inference_summary.npz"
             )
             
+            print(">>> Generating HTML visualizations for Cube files...")
+            try:
+                cubes_2_htmls(output_dir, iso_value=0.03)
+            except Exception as e:
+                print(f"Warning: HTML generation failed: {e}")
+                traceback.print_exc()
+
             # ---------------------------
             # Step 3: Format Output
             # ---------------------------
@@ -312,7 +333,7 @@ def run_dm_infer_pipeline(ase_db_path: str, model_path: str, output_dir: str):
                 "results_dir": npy_results_dir,
                 "output_dir": output_dir, # 明确返回根输出目录
                 "data_preview": summary_data[:3] if summary_data else []
-            })
+            }, cls=NumpyEncoder)
 
         finally:
             # 无论成功失败，务必切回原目录

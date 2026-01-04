@@ -12,7 +12,7 @@ from langchain_core.messages import HumanMessage, AIMessage
 from langchain.tools import StructuredTool
 from langchain.callbacks import StreamlitCallbackHandler
 import extra_streamlit_components as stx
-
+import shutil
 from tools_lib_infer import (
     search_molecule_in_db, 
     build_and_optimize_cluster, 
@@ -147,6 +147,14 @@ with st.sidebar:
                 st.rerun()
         with col2:
             if st.button("🗑️", key=f"del_{chat['id']}"):
+                safe_username = "".join([c for c in current_user['username'] if c.isalnum() or c in ('-','_')])
+                chat_folder = os.path.join("users", safe_username, "output", str(chat['id']))
+                
+                if os.path.exists(chat_folder):
+                    try:
+                        shutil.rmtree(chat_folder)
+                    except Exception as e:
+                        st.toast(f"⚠️ 文件夹删除失败: {e}")
                 db.delete_conversation(chat["id"])
                 if st.session_state.get("current_chat_id") == chat["id"]:
                     st.session_state["current_chat_id"] = None
@@ -332,8 +340,8 @@ custom_system_prefix = """
 
 3.  **建模与优化 (Build_and_Optimize)**：
     * 构造 JSON 参数。
-    * 如果第2步找到了 DB 路径，参数里用 `{"name": "DME", "path": "...", "count": 3}`。
-    * 如果没找到，用 `{"smiles": "...", "count": 3}`。
+    * 如果第2步找到了 DB 路径，参数里用 `{{"name": "DME", "path": "...", "count": 3}}`。
+    * 如果没找到，用 `{{"smiles": "...", "count": 3}}`。
     * 此工具会自动进行 UMA 结构优化。
 
 4.  **电子结构推断 (Run_Inference_Pipeline)**：
@@ -341,7 +349,7 @@ custom_system_prefix = """
     * 执行推断并分析性质（HOMO/LUMO/Dipole等）。
 
 5.  **最终报告**：
-    * 展示关键的电子性质（从推断结果中读取）。
+    * 展示关键的电子性质（如HOMO/LUMO/Dipole/ESP等，从推断结果中读取）。
     * **必须保留** `[[DOWNLOAD:...]]` 链接以便用户下载结果。
     * 最后说明“任务已完成”。
 

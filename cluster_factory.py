@@ -5,7 +5,7 @@ import shutil
 import traceback
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional, Union, Any
-
+from contextlib import ExitStack
 from ase import Atoms
 from ase.db import connect
 from ase.io import write
@@ -179,8 +179,17 @@ def normalize_input_data(source: Union[str, List[str], List[Dict], None],
             raw_entries = parse_smiles_input([source], prefix)
             return optimize_monomers(raw_entries, prefix, workspace, device)
 
-    # Case: List of strings (SMILES)
+    # Case: List of strings (SMILES or File Paths)
     if isinstance(source, list) and all(isinstance(x, str) for x in source):
+        # Fix: Check if the list contains file paths instead of SMILES
+        if len(source) > 0 and (source[0].endswith('.db') or source[0].endswith('.json')):
+            all_entries = []
+            for path in source:
+                if path.endswith('.db') or path.endswith('.json'):
+                    print(f"Loading {prefix} from DB: {path}")
+                    all_entries.extend(load_db_entries(path, show_progress))
+            return all_entries
+
         raw_entries = parse_smiles_input(source, prefix)
         return optimize_monomers(raw_entries, prefix, workspace, device)
 
@@ -282,7 +291,12 @@ def build_from_plan(
         show_progress: bool,
 ) -> Dict[str, int]:
     stats = {'attempted': 0, 'built': 0, 'failed': 0, 'SSIP': 0, 'CIP': 0, 'AGG': 0}
-    db_handles = {cat: connect(out_dirs[cat]['db']) for cat in ['SSIP', 'CIP', 'AGG', 'ALL']}
+    with ExitStack() as stack:
+        # 打开所有数据库连接，并注册到 stack 中
+        db_handles = {
+            cat: stack.enter_context(connect(out_dirs[cat]['db'])) 
+            for cat in ['SSIP', 'CIP', 'AGG', 'ALL']
+        }
 
     total_items = sum(len(plan.get(cat, [])) for cat in ['SSIP', 'CIP', 'AGG'])
     if show_progress:
