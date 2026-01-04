@@ -13,7 +13,12 @@ from langchain.tools import StructuredTool
 from langchain.callbacks import StreamlitCallbackHandler
 import extra_streamlit_components as stx
 
-from tools_lib_infer import dptb_infer_from_ase_db, get_ham_info_from_npy, build_cluster_db_from_smiles, compress_directory
+from tools_lib_infer import (
+    search_molecule_in_db, 
+    build_and_optimize_cluster, 
+    run_dm_infer_pipeline, 
+    compress_directory
+)
 import database as db
 
 #os.environ["NO_PROXY"] = "localhost,127.0.0.1,0.0.0.0"
@@ -224,161 +229,126 @@ def get_user_workspace():
         os.makedirs(workspace, exist_ok=True)
     return workspace
 
-def build_cluster_tool(ion_smiles: str, ligands_json: str):
-    """Step 1 (Optional): 从 SMILES 构建团簇"""
+def tool_search_db(query_name: str, mol_type: str):
+    """Step 1: Search molecule in local database."""
+    user_ws = get_user_workspace()
+    # 创建一个 search_results 文件夹
+    search_dir = os.path.join(user_ws, "search_cache")
+    return search_molecule_in_db(query_name, mol_type, search_dir)
+
+def tool_build_optimize(ion_name: str, solvents_json: str, anions_json: str):
+    """Step 2: Build and Optimize Cluster."""
+    # solvents_json 格式: '[{"name": "DME", "path": "users/.../found_DME.db", "count": 3}]'
+    # 或者 '[{"smiles": "COC", "count": 3}]'
     try:
-        if isinstance(ligands_json, str):
-            ligands_list = json.loads(ligands_json)
-        else:
-            ligands_list = ligands_json
-            
-        user_ws = get_user_workspace()
-        timestamp = time.strftime("%Y%m%d_%H%M%S")
-        task_dir = os.path.join(user_ws, f"task_{timestamp}")
-        
-        result_msg = build_cluster_db_from_smiles(
-            ion_smiles=ion_smiles, 
-            ligands_list=ligands_list, 
-            output_dir=task_dir
-        )
-        
-        # 提取 db 路径用于提示下一步
-        db_path = os.path.join(task_dir, "generated_cluster.db")
-        
-        return f"{result_msg}\n\n【Next Step】请将生成的数据库路径 `{db_path}` 传递给 Run_Inference 工具。"
-    except Exception as e:
-        return f"参数解析错误或构建失败: {str(e)}"
-
-def run_inference_tool(ase_db_path, model_path=None):
-    """Step 2: 运行推理生成哈密顿量 NPY"""
-    if model_path in ["None", "null", "", None]:
-        model_path = DEFAULT_MODEL_PATH
-        st.toast(f"ℹ️ 已自动加载默认模型: {os.path.basename(model_path)}")
-
-    validate_path_exists(ase_db_path, "输入数据库 (ase.db)")
-    validate_path_exists(model_path, "模型文件")
+        solvents = json.loads(solvents_json) if solvents_json else []
+        anions = json.loads(anions_json) if anions_json else []
+    except:
+        return "Error parsing JSON inputs."
 
     user_ws = get_user_workspace()
-    input_dir = os.path.dirname(os.path.abspath(ase_db_path))
-    folder_name = os.path.basename(input_dir)
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    task_dir = os.path.join(user_ws, f"task_{timestamp}")
     
-    if folder_name.startswith("task_") and os.path.dirname(input_dir) == os.path.abspath(user_ws):
-        task_root = input_dir
+    return build_and_optimize_cluster(ion_name, solvents, anions, task_dir)
+
+def tool_infer_pipeline(optimized_db_path: str, model_path: str = None):
+    """Step 3: Run Inference Pipeline."""
+    if model_path in ["None", "", None]:
+        model_path = DEFAULT_MODEL_PATH
+    
+    validate_path_exists(optimized_db_path, "Optimized DB")
+    
+    db_dir = os.path.dirname(optimized_db_path) # A: final_optimized, B: task_xxx
+    parent_dir = os.path.dirname(db_dir)        # A: task_xxx,       B: users/.../output
+    
+    if os.path.basename(db_dir) == "final_optimized":
+        task_root = parent_dir
+    elif os.path.basename(db_dir).startswith("task_"): # 简单的启发式判断
+        task_root = db_dir
     else:
-        # 2. 否则（例如用户上传的文件），创建一个新的 task 目录
-        timestamp = time.strftime("%Y%m%d_%H%M%S")
-        task_root = os.path.join(user_ws, f"task_{timestamp}")
+        # 如果无法确定，为了安全起见，就用 db 所在的目录作为根目录
+        # 这样至少文件在一起，不会乱跑
+        task_root = db_dir
 
-    # 定义输出目录
-    infer_output_dir = os.path.join(task_root, "inference")
+    # 输出目录: task_root/inference_results
+    infer_out = os.path.join(task_root, "inference_results")
     
-    result_msg = dptb_infer_from_ase_db(ase_db_path, infer_output_dir, model_path)
+    result_json_str = run_dm_infer_pipeline(optimized_db_path, model_path, infer_out)
     
-    # 提示用户下一步的路径
-    npy_path = os.path.join(infer_output_dir, 'npy')
-    
-    return f"{result_msg}\n\n【Next Step】请将 NPY 路径 `{npy_path}` 传递给 Analyze_Electronic_Structure 工具。"
-
-def analyze_electronic_structure_tool(ase_db_path, npy_folder_path):
-    """Step 3: 分析电子结构 (HOMO/LUMO/Gap)"""
-    ase_db_path = os.path.abspath(ase_db_path)
-    npy_folder_path = os.path.abspath(npy_folder_path)
-
-    validate_path_exists(ase_db_path, "ASE数据库")
-    validate_path_exists(npy_folder_path, "NPY文件夹")
-
-    # npy_parent = os.path.dirname(npy_folder_path) # task_TIMESTAMP
-    # work_dir = os.path.join(npy_parent, "ham_analysis")
-    task_root = os.path.dirname(ase_db_path)
-    work_dir = os.path.join(task_root, "ham_analysis")
-    os.makedirs(work_dir, exist_ok=True)
-    
-    # 切换目录，在 os.getcwd() 下生成 summary CSV
-    original_cwd = os.getcwd()
-    os.chdir(work_dir)
-    
-    zip_path = ""
-    
+    # 打包
     try:
-        result_str = get_ham_info_from_npy(
-            ase_db_path=ase_db_path, 
-            npy_folder_path=npy_folder_path,
-            output_base_dir=work_dir,
-            convert_smiles_flag=False,
-            max_items=50 # 限制分析数量以防超时
-        )
-        
-        # 读取生成的 JSON 摘要返回给 LLM
-        json_path = "ham_summary.json" # 因为已经 chdir 到了 work_dir
-        json_content = ""
-        if os.path.exists(json_path):
-            try:
-                with open(json_path, 'r') as f:
-                    data = json.load(f)
-                    preview = data[:3]
-                    json_content = json.dumps(preview, indent=2) + f"\n...(剩余 {len(data)-3} 条数据见CSV)"
-            except:
-                json_content = "(JSON读取失败)"
-        else:
-            json_content = "(未找到 ham_summary.json)"
-
-        timestamp = time.strftime("%Y%m%d_%H%M%S")
-        zip_base_name = os.path.join(task_root, f"analysis_result_{timestamp}")
-        zip_path = compress_directory(work_dir, zip_base_name)
+        res_dict = json.loads(result_json_str)
+        if res_dict.get("success"):
+            csv_path = res_dict.get("csv_path")
+            # 优先使用返回的 output_dir，如果没有则使用我们自己定义的 infer_out
+            output_dir = res_dict.get("output_dir", infer_out)
             
-    finally:
-        os.chdir(original_cwd) # 恢复目录
-
-    return (
-        f"{result_str}\n"
-        f"--------------------------------------------------\n"
-        f"【电子结构分析结果】\n{json_content}\n"
-        f"[[DOWNLOAD:{zip_path}]]\n"
-        f"请向用户展示前几个分子的 HOMO/LUMO/Gap 数据，并告知 CSV 和 Cube 文件位置 ({work_dir})。"
-    )
+            # 压缩 output_dir (包含 csv 和 results 文件夹)
+            # zip 文件放在 task_root 下，命名为 analysis_package.zip
+            zip_base_name = os.path.join(task_root, "analysis_package")
+            zip_path = compress_directory(output_dir, zip_base_name)
+            
+            return (
+                f"推理完成。\n"
+                f"CSV摘要路径: {csv_path}\n"
+                f"数据预览: {res_dict.get('data_preview')}\n"
+                f"[[DOWNLOAD:{zip_path}]]"
+            )
+        else:
+            return f"推理出错: {result_json_str}"
+    except Exception as e:
+        return f"Error processing inference results: {e}"
 
 tools = [
     StructuredTool.from_function(
-        func=build_cluster_tool,
-        name="Build_Cluster_From_SMILES",
-        description="Step 1. Build a molecular cluster from SMILES. Args: ion_smiles (str), ligands_json (List[Dict] e.g. [{'smiles': 'CCO', 'count': 2}])."
+        func=tool_search_db,
+        name="Search_Molecule_DB",
+        description="Search for a molecule (solvent or anion) in the local calibrated database. Returns a DB path if found. Args: query_name (e.g., 'DME'), mol_type ('solvent' or 'anion')."
     ),
     StructuredTool.from_function(
-        func=run_inference_tool,
-        name="Run_Inference",
-        description="Step 2. Run DPTB inference using an ase.db file path."
+        func=tool_build_optimize,
+        name="Build_and_Optimize",
+        description="Build a cluster and optimize it using UMA. Provide solvents/anions config as JSON lists. Each item should have 'count', and either 'path' (from Search tool) or 'smiles'. Example: solvents_json='[{\"name\":\"DME\", \"path\":\"...db\", \"count\":3}]'"
     ),
     StructuredTool.from_function(
-        func=analyze_electronic_structure_tool,
-        name="Analyze_Electronic_Structure",
-        description="Step 3. Calculate HOMO/LUMO/Gap from Hamiltonian NPY files."
+        func=tool_infer_pipeline,
+        name="Run_Inference_Pipeline",
+        description="Run DPTB inference and Electronic Structure Analysis on the optimized DB. Args: optimized_db_path."
     )
 ]
 
 # --- 初始化 Agent ---
 
 custom_system_prefix = """
-你是一个计算化学 AI 助手。请按步骤执行：
+你是一个计算化学 AI 助手 EMolAgent。请遵循以下工作流来处理用户的分子计算请求：
 
-1. **Build_Cluster_From_SMILES**:
-   - 输入中心离子 (如 "Li") 和配体列表 (如 [{{"smiles": "CCO", "count": 2}}])。
-   - 生成团簇并保存为 ase.db。
-   - 获得生成的 db 文件路径。
+1.  **解析需求**：识别用户想要的中心离子（如 Li）、溶剂（如 DME）和阴离子（如 FSI）及其数量。
 
-2. **Run_Inference**:
-   - 使用上一步生成的 ase.db 文件路径。
-   - 运行推理，生成 NPY。
+2.  **数据库检索 (Search_Molecule_DB)**：
+    * **优先查库**：对于提到的每个分子（溶剂或阴离子），**必须**先调用 `Search_Molecule_DB` 尝试在本地库中查找。
+    * *Solvent* 查 'solvent' 类型，*Salt/Anion* 查 'anion' 类型。
+    * **确认反馈**：如果找到了（返回了 `db_path`），告诉用户“已在库中找到 DME (构型已校准)”。如果没找到，则准备使用 SMILES（你需要自己知道或询问用户 SMILES，常用分子如 DME=COCCOC 可自备）。
 
-3. **Analyze_Electronic_Structure**:
-   - 使用 ase.db 和 NPY 文件夹。
-   - 分析电子结构。
+3.  **建模与优化 (Build_and_Optimize)**：
+    * 构造 JSON 参数。
+    * 如果第2步找到了 DB 路径，参数里用 `{"name": "DME", "path": "...", "count": 3}`。
+    * 如果没找到，用 `{"smiles": "...", "count": 3}`。
+    * 此工具会自动进行 UMA 结构优化。
 
-【响应规则】
-- 请直接根据返回的 JSON 数据回答用户的 HOMO/LUMO/Gap 结果。
-- 告知用户结果已保存为 CSV，且相关的 Cube 轨道文件已生成，文件夹内含 html 文件可用于可视化。
-- 如果工具返回结果中包含 `[[DOWNLOAD:路径]]` 标记，请务必在你的最终回复中原样保留该标记（不要修改路径），以便 UI 能够生成下载按钮。
-- 你的最后一句必须是："任务已完成。"
-- 如果出错请结束任务。
+4.  **电子结构推断 (Run_Inference_Pipeline)**：
+    * 使用上一步生成的 `optimized_db` 路径。
+    * 执行推断并分析性质（HOMO/LUMO/Dipole等）。
+
+5.  **最终报告**：
+    * 展示关键的电子性质（从推断结果中读取）。
+    * **必须保留** `[[DOWNLOAD:...]]` 链接以便用户下载结果。
+    * 最后说明“任务已完成”。
+
+【注意】
+* 如果用户说“3个DME”，意思是 count=3。
+* FSI 通常是阴离子。
+* 一步步执行，不要跳过“查库”步骤，因为库内构型质量最高。
 """
 
 prompt = ChatPromptTemplate.from_messages([
