@@ -5,6 +5,7 @@ import jwt
 import datetime
 import time
 import random
+import threading
 
 class SimpleSnowflake:
     def __init__(self, datacenter_id=1, worker_id=1):
@@ -18,33 +19,35 @@ class SimpleSnowflake:
         self.datacenter_id_shift = 17
         self.worker_id_shift = 12
         self.sequence_mask = 0xFFF
+        self.lock = threading.Lock()
 
     def _current_timestamp(self):
         return int(time.time() * 1000)
 
     def next_id(self):
-        timestamp = self._current_timestamp()
+        with self.lock:
+            timestamp = self._current_timestamp()
 
-        if timestamp < self.last_timestamp:
-            raise Exception("Clock moved backwards!")
+            if timestamp < self.last_timestamp:
+                raise Exception("Clock moved backwards!")
 
-        if self.last_timestamp == timestamp:
-            self.sequence = (self.sequence + 1) & self.sequence_mask
-            if self.sequence == 0:
-                # 当前毫秒序列耗尽，等待下一毫秒
-                while timestamp <= self.last_timestamp:
-                    timestamp = self._current_timestamp()
-        else:
-            self.sequence = 0
+            if self.last_timestamp == timestamp:
+                self.sequence = (self.sequence + 1) & self.sequence_mask
+                if self.sequence == 0:
+                    # 当前毫秒序列耗尽，等待下一毫秒
+                    while timestamp <= self.last_timestamp:
+                        timestamp = self._current_timestamp()
+            else:
+                self.sequence = 0
 
-        self.last_timestamp = timestamp
+            self.last_timestamp = timestamp
 
-        # 生成 ID
-        new_id = ((timestamp << self.timestamp_shift) |
-                  (self.datacenter_id << self.datacenter_id_shift) |
-                  (self.worker_id << self.worker_id_shift) |
-                  self.sequence)
-        return new_id
+            # 生成 ID
+            new_id = ((timestamp << self.timestamp_shift) |
+                      (self.datacenter_id << self.datacenter_id_shift) |
+                      (self.worker_id << self.worker_id_shift) |
+                      self.sequence)
+            return new_id
 
 # 初始化生成器
 id_generator = SimpleSnowflake()

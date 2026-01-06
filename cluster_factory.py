@@ -5,7 +5,7 @@ import shutil
 import traceback
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional, Union, Any
-
+from contextlib import ExitStack
 from ase import Atoms
 from ase.db import connect
 from ase.io import write
@@ -169,29 +169,31 @@ def normalize_input_data(source: Union[str, List[str], List[Dict], None],
             source[0].get('atoms'), Atoms):
         return source
 
-    # Case: File path
+    # Normalization: 将单个字符串输入转换为列表，统一处理
     if isinstance(source, str):
-        if source.endswith('.db') or source.endswith('.json'):
-            print(f"Loading {prefix} from DB: {source}")
-            return load_db_entries(source, show_progress)
-        else:
-            # Single SMILES string
-            raw_entries = parse_smiles_input([source], prefix)
-            return optimize_monomers(raw_entries, prefix, workspace, device)
+        source = [source]
 
     # Case: List of strings (SMILES or File Paths)
     if isinstance(source, list) and all(isinstance(x, str) for x in source):
-        # Fix: Check if the list contains file paths instead of SMILES
-        if len(source) > 0 and (source[0].endswith('.db') or source[0].endswith('.json')):
-            all_entries = []
-            for path in source:
-                if path.endswith('.db') or path.endswith('.json'):
-                    print(f"Loading {prefix} from DB: {path}")
-                    all_entries.extend(load_db_entries(path, show_progress))
-            return all_entries
+        all_entries = []
+        smiles_batch = []
 
-        raw_entries = parse_smiles_input(source, prefix)
-        return optimize_monomers(raw_entries, prefix, workspace, device)
+        for item in source:
+            # 判断是否为数据库文件路径
+            if item.endswith('.db') or item.endswith('.json'):
+                print(f"Loading {prefix} from DB: {item}")
+                try:
+                    all_entries.extend(load_db_entries(item, show_progress))
+                except Exception as e:
+                    print(f"Error loading {item}: {e}")
+            else:
+                # 否则视为 SMILES 字符串
+                smiles_batch.append(item)
+        if smiles_batch:
+            raw_entries = parse_smiles_input(smiles_batch, prefix)
+            optimized_entries = optimize_monomers(raw_entries, prefix, workspace, device)
+            all_entries.extend(optimized_entries)
+        return all_entries
 
     return []
 
@@ -291,95 +293,100 @@ def build_from_plan(
         show_progress: bool,
 ) -> Dict[str, int]:
     stats = {'attempted': 0, 'built': 0, 'failed': 0, 'SSIP': 0, 'CIP': 0, 'AGG': 0}
-    db_handles = {cat: connect(out_dirs[cat]['db']) for cat in ['SSIP', 'CIP', 'AGG', 'ALL']}
+    with ExitStack() as stack:
+        db_handles = {
+            cat: stack.enter_context(connect(out_dirs[cat]['db'])) 
+            for cat in ['SSIP', 'CIP', 'AGG', 'ALL']
+        }
 
-    total_items = sum(len(plan.get(cat, [])) for cat in ['SSIP', 'CIP', 'AGG'])
-    if show_progress:
-        main_pbar = tqdm(total=total_items, desc="Building clusters", unit="cluster")
+        total_items = sum(len(plan.get(cat, [])) for cat in ['SSIP', 'CIP', 'AGG'])
+        if show_progress:
+            main_pbar = tqdm(total=total_items, desc="Building clusters", unit="cluster")
 
-    for cat in ['SSIP', 'CIP', 'AGG']:
-        items = plan.get(cat, [])
-        if not items: continue
+        # 关键修正：确保循环在 with 块内部，这样写入时数据库连接是打开的
+        for cat in ['SSIP', 'CIP', 'AGG']:
+            items = plan.get(cat, [])
+            if not items: continue
 
-        items_iter = tqdm(items, desc=f"Building {cat}", unit="item", leave=False) if show_progress else items
+            items_iter = tqdm(items, desc=f"Building {cat}", unit="item", leave=False) if show_progress else items
 
-        for it in items_iter:
-            stats['attempted'] += 1
+            for it in items_iter:
+                stats['attempted'] += 1
 
-            solvent_name = it['solvent']['name']
-            anion_name = it['anion']['name'] if it['anion'] else 'None'
+                solvent_name = it['solvent']['name']
+                anion_name = it['anion']['name'] if it['anion'] else 'None'
 
-            if show_progress:
-                items_iter.set_postfix_str(f"S={solvent_name[:8]} A={anion_name[:8]} ns={it['n_solv']}")
+                if show_progress:
+                    items_iter.set_postfix_str(f"S={solvent_name[:8]} A={anion_name[:8]} ns={it['n_solv']}")
 
-            ligand_info = []
-            ligand_info.append((it['solvent']['atoms'], it['n_solv']))
+                ligand_info = []
+                ligand_info.append((it['solvent']['atoms'], it['n_solv']))
 
-            if it['anion'] and it['n_anion'] > 0:
-                anion_obj = it['anion']['atoms']
-                if isinstance(anion_obj, Atoms):
-                    anion_obj.charge = -1
-                ligand_info.append((anion_obj, it['n_anion']))
+                if it['anion'] and it['n_anion'] > 0:
+                    anion_obj = it['anion']['atoms']
+                    if isinstance(anion_obj, Atoms):
+                        anion_obj.charge = -1
+                    ligand_info.append((anion_obj, it['n_anion']))
 
-            current_kwargs = cluster_kwargs.copy()
-            if show_progress: current_kwargs['verbose'] = False
+                current_kwargs = cluster_kwargs.copy()
+                if show_progress: current_kwargs['verbose'] = False
 
-            try:
-                cluster = build_cluster(
-                    ion_identifier=ion,
-                    ligand_molecule_info=ligand_info,
-                    **current_kwargs
-                )
+                try:
+                    cluster = build_cluster(
+                        ion_identifier=ion,
+                        ligand_molecule_info=ligand_info,
+                        **current_kwargs
+                    )
 
-                # ==========================================
-                # Explicitly set charges on the Atoms object
-                # ==========================================
+                    # ==========================================
+                    # Explicitly set charges on the Atoms object
+                    # ==========================================
 
-                # 1. Set global info properties for ASE/XYZ
-                cluster.info['charge'] = it['charge']
-                cluster.info['spin'] = it['spin']
-                # Critical for UMA: Save anion count so optimizer knows the charge formula
-                cluster.info['n_anion'] = it['n_anion']
+                    # 1. Set global info properties for ASE/XYZ
+                    cluster.info['charge'] = it['charge']
+                    cluster.info['spin'] = it['spin']
+                    # Critical for UMA: Save anion count so optimizer knows the charge formula
+                    cluster.info['n_anion'] = it['n_anion']
 
-                # 2. Identify the cation atom and force its charge to +1
-                ion_symbol = ''.join([c for c in ion if c.isalpha()])
-                for atom in cluster:
-                    if atom.symbol == ion_symbol:
-                        atom.charge = 1.0
-                        break
+                    # 2. Identify the cation atom and force its charge to +1
+                    ion_symbol = ''.join([c for c in ion if c.isalpha()])
+                    for atom in cluster:
+                        if atom.symbol == ion_symbol:
+                            atom.charge = 1.0
+                            break
 
-                # ==========================================
-                # Save Files
-                # ==========================================
+                    # ==========================================
+                    # Save Files
+                    # ==========================================
 
-                fname = compose_filename(ion, solvent_name, anion_name, it['n_solv'], it['n_anion'], cat)
-                comment = f"cat={cat} chg={it['charge']} spin={it['spin']} ion={ion} ns={it['n_solv']} na={it['n_anion']}"
+                    fname = compose_filename(ion, solvent_name, anion_name, it['n_solv'], it['n_anion'], cat)
+                    comment = f"cat={cat} chg={it['charge']} spin={it['spin']} ion={ion} ns={it['n_solv']} na={it['n_anion']}"
 
-                # Write XYZ
-                write(str(out_dirs[cat]['xyz'] / fname), cluster, comment=comment)
-                write(str(out_dirs['ALL']['xyz'] / fname), cluster, comment=comment)
+                    # Write XYZ
+                    write(str(out_dirs[cat]['xyz'] / fname), cluster, comment=comment)
+                    write(str(out_dirs['ALL']['xyz'] / fname), cluster, comment=comment)
 
-                # ==========================================
-                # DB Writing Logic
-                # ==========================================
-                kvp = {
-                    'category': cat, 'ion': ion, 'solvent_name': solvent_name, 'anion_name': anion_name,
-                    'n_solv': it['n_solv'], 'n_anion': it['n_anion'], 'charge': it['charge'],
-                    'spin': it['spin'], 'xyz_file': fname, 'n_atoms_cluster': len(cluster)
-                }
+                    # ==========================================
+                    # DB Writing Logic
+                    # ==========================================
+                    kvp = {
+                        'category': cat, 'ion': ion, 'solvent_name': solvent_name, 'anion_name': anion_name,
+                        'n_solv': it['n_solv'], 'n_anion': it['n_anion'], 'charge': it['charge'],
+                        'spin': it['spin'], 'xyz_file': fname, 'n_atoms_cluster': len(cluster)
+                    }
 
-                db_handles[cat].write(cluster, data=kvp, **kvp)
-                db_handles['ALL'].write(cluster, data=kvp, **kvp)
+                    db_handles[cat].write(cluster, data=kvp, **kvp)
+                    db_handles['ALL'].write(cluster, data=kvp, **kvp)
 
-                stats['built'] += 1
-                stats[cat] += 1
-                if verbose and not show_progress:
-                    print(f"  ✓ {cat}: {fname} (Charge: {it['charge']})")
+                    stats['built'] += 1
+                    stats[cat] += 1
+                    if verbose and not show_progress:
+                        print(f"  ✓ {cat}: {fname} (Charge: {it['charge']})")
 
-            except Exception as e:
-                stats['failed'] += 1
-                if verbose:
-                    print(f"  ✗ Failed: {solvent_name} + {anion_name}: {e}")
+                except Exception as e:
+                    stats['failed'] += 1
+                    if verbose:
+                        print(f"  ✗ Failed: {solvent_name} + {anion_name}: {e}")
                     # traceback.print_exc()
 
             if show_progress:

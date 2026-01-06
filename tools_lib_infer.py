@@ -4,6 +4,7 @@ import json
 import time
 import traceback
 import re
+import multiprocessing
 import pandas as pd
 import torch
 import numpy as np
@@ -240,12 +241,10 @@ def build_and_optimize_cluster(
 # 电子结构推断 (Infer + DM Analysis)
 # ==========================================
 
-def run_dm_infer_pipeline(ase_db_path: str, model_path: str, output_dir: str):
+def _dm_infer_worker(ase_db_path, model_path, output_dir, queue):
     """
-    运行完整的推断流水线：
-    1. DPTB 推断 -> 生成 Hamiltonian/DM NPY
-    2. DM Infer -> 计算 Dipole, ESP, etc.
-    3. Hamiltonian Analysis -> 生成 Cube, HOMO/LUMO
+    Subprocess worker for DM inference pipeline.
+    Isolates os.chdir operations to prevent thread-safety issues in main process.
     """
     try:
         os.environ["LC_ALL"] = "C"
@@ -256,92 +255,108 @@ def run_dm_infer_pipeline(ase_db_path: str, model_path: str, output_dir: str):
         output_dir = os.path.abspath(output_dir)
         os.makedirs(output_dir, exist_ok=True)
         
-        # 记录原始工作目录
-        original_cwd = os.getcwd()
+        # 在子进程中切换目录，安全
+        os.chdir(output_dir)
+
+        # ---------------------------
+        # Step 1: DPTB Inference
+        # ---------------------------
+        print(">>> Starting DPTB Inference (Subprocess)...")
+        # 调用 infer_entry 中的实现
+        infer_entry.dptb_infer_from_ase_db(
+            ase_db_path=ase_db_path,
+            out_path=output_dir,
+            checkpoint_path=model_path,
+            limit=50, # 限制数量，避免太慢
+            device='cuda' if torch.cuda.is_available() else 'cpu'
+        )
         
+        possible_npy_dirs = [
+            os.path.join(output_dir, 'inference', 'npy'),
+            os.path.join(output_dir, 'results')
+        ]
+        npy_results_dir = os.path.join(output_dir, 'results') # Default fallback
+        for d in possible_npy_dirs:
+            if os.path.exists(d):
+                npy_results_dir = d
+                break
+        
+        print(f"Using NPY results dir: {npy_results_dir}")
+
+        # ---------------------------
+        # Step 2: DM Inference (Properties & Cubes)
+        # ---------------------------
+        print(">>> Starting DM Property Inference (via infer_entry)...")
+        
+        # 使用 infer_entry.dm_infer_entry 进行一站式属性计算
+        summary_data = infer_entry.dm_infer_entry(
+            abs_ase_path=ase_db_path,
+            results_folder_path=npy_results_dir,
+            dm_filename="predicted.npy",
+            convention="def2svp",
+            calc_esp_flag=True,
+            calc_electronic_flag=True,
+            save_cube_info=True,
+            n_save_cube_items=5,   # 只生成前5个Cube
+            cube_grid=40,          # 网格精度
+            summary_filename="inference_summary.npz"
+        )
+        
+        print(">>> Generating HTML visualizations for Cube files...")
         try:
-            # 切换到输出目录，确保所有工具的隐式输出（如 ham_analysis）都保存在此处
-            os.chdir(output_dir)
+            cubes_2_htmls(output_dir, iso_value=0.03)
+        except Exception as e:
+            print(f"Warning: HTML generation failed: {e}")
+            traceback.print_exc()
 
-            # ---------------------------
-            # Step 1: DPTB Inference
-            # ---------------------------
-            print(">>> Starting DPTB Inference...")
-            # 调用 infer_entry 中的实现，它会处理 LMDB 生成和模型推断
-            # 结果默认保存在 output_dir/results 下
-            infer_entry.dptb_infer_from_ase_db(
-                ase_db_path=ase_db_path,
-                out_path=output_dir,
-                checkpoint_path=model_path,
-                limit=50, # 限制数量，避免太慢
-                device='cuda' if torch.cuda.is_available() else 'cpu'
-            )
+        # ---------------------------
+        # Step 3: Format Output
+        # ---------------------------
+        # 将结果保存为 CSV 方便 Agent 读取
+        csv_path = os.path.join(output_dir, "analysis_summary.csv")
+        if summary_data:
+            df = pd.DataFrame(summary_data)
+            df.to_csv(csv_path, index=False)
             
-            possible_npy_dirs = [
-                os.path.join(output_dir, 'inference', 'npy'),
-                os.path.join(output_dir, 'results')
-            ]
-            npy_results_dir = os.path.join(output_dir, 'results') # Default fallback
-            for d in possible_npy_dirs:
-                if os.path.exists(d):
-                    npy_results_dir = d
-                    break
-            
-            print(f"Using NPY results dir: {npy_results_dir}")
-
-            # ---------------------------
-            # Step 2: DM Inference (Properties & Cubes)
-            # ---------------------------
-            print(">>> Starting DM Property Inference (via infer_entry)...")
-            
-            # 使用 infer_entry.dm_infer_entry 进行一站式属性计算
-            # 它会计算 Dipole, HOMO/LUMO, ESP 并生成 Cube 文件
-            summary_data = infer_entry.dm_infer_entry(
-                abs_ase_path=ase_db_path,
-                results_folder_path=npy_results_dir,
-                dm_filename="predicted.npy",
-                convention="def2svp",
-                calc_esp_flag=True,
-                calc_electronic_flag=True,
-                save_cube_info=True,
-                n_save_cube_items=5,   # 只生成前5个Cube
-                cube_grid=40,          # 网格精度
-                summary_filename="inference_summary.npz"
-            )
-            
-            print(">>> Generating HTML visualizations for Cube files...")
-            try:
-                cubes_2_htmls(output_dir, iso_value=0.03)
-            except Exception as e:
-                print(f"Warning: HTML generation failed: {e}")
-                traceback.print_exc()
-
-            # ---------------------------
-            # Step 3: Format Output
-            # ---------------------------
-            # 将结果保存为 CSV 方便 Agent 读取
-            # 注意：此时 CWD 已经是 output_dir，但使用绝对路径更安全
-            csv_path = os.path.join(output_dir, "analysis_summary.csv")
-            if summary_data:
-                df = pd.DataFrame(summary_data)
-                # 简单格式化一下浮点数列
-                df.to_csv(csv_path, index=False)
-                
-            return json.dumps({
-                "success": True,
-                "csv_path": csv_path,
-                "results_dir": npy_results_dir,
-                "output_dir": output_dir, # 明确返回根输出目录
-                "data_preview": summary_data[:3] if summary_data else []
-            }, cls=NumpyEncoder)
-
-        finally:
-            # 无论成功失败，务必切回原目录
-            os.chdir(original_cwd)
+        result = json.dumps({
+            "success": True,
+            "csv_path": csv_path,
+            "results_dir": npy_results_dir,
+            "output_dir": output_dir, # 明确返回根输出目录
+            "data_preview": summary_data[:3] if summary_data else []
+        }, cls=NumpyEncoder)
+        
+        queue.put({"status": "success", "data": result})
 
     except Exception as e:
         traceback.print_exc()
-        return f"Pipeline Failed: {str(e)}"
+        queue.put({"status": "error", "message": f"Pipeline Failed: {str(e)}"})
+
+def run_dm_infer_pipeline(ase_db_path: str, model_path: str, output_dir: str):
+    """
+    运行完整的推断流水线：
+    1. DPTB 推断 -> 生成 Hamiltonian/DM NPY
+    2. DM Infer -> 计算 Dipole, ESP, etc.
+    3. Hamiltonian Analysis -> 生成 Cube, HOMO/LUMO
+    
+    Updated: Uses multiprocessing to avoid os.chdir thread-safety issues.
+    """
+    # 使用 spawn 方法启动子进程，避免 CUDA 上下文在 fork 时崩溃
+    ctx = multiprocessing.get_context('spawn')
+    queue = ctx.Queue()
+    
+    p = ctx.Process(target=_dm_infer_worker, args=(ase_db_path, model_path, output_dir, queue))
+    p.start()
+    p.join()
+    
+    if not queue.empty():
+        res = queue.get()
+        if res['status'] == 'success':
+            return res['data']
+        else:
+            return res['message']
+    else:
+        return "Pipeline Failed: Subprocess did not return any data."
 
 def compress_directory(dir_path: str, output_path_base: str) -> str:
     """
