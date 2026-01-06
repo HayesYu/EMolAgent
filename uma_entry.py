@@ -25,7 +25,7 @@ from fairchem.core.calculate.pretrained_mlip import get_isolated_atomic_energies
 # ==========================================
 # Default Configuration
 # ==========================================
-DEFAULT_CHECKPOINT = os.path.join(os.getcwd(), 'uma-m-1p1.pt')
+DEFAULT_CHECKPOINT = os.path.join(os.getcwd(), 'resources/models/uma-m-1p1.pt')
 DEFAULT_WORKSPACE = os.path.abspath('out_li_clusters')
 DEFAULT_MODEL_NAME = "uma-m-1p1"
 

@@ -17,8 +17,8 @@ from emoles.inference import infer_entry
 # 常量定义
 # ==========================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-SOLVENT_DB_PATH = os.path.join(BASE_DIR, "cut_10_common.db")
-ANION_DB_PATH = os.path.join(BASE_DIR, "anions.db")
+SOLVENT_DB_PATH = os.path.join(BASE_DIR, "resources/db/cut_10_common.db")
+ANION_DB_PATH = os.path.join(BASE_DIR, "resources/db/anions.db")
 
 class NumpyEncoder(json.JSONEncoder):
     def default(self, obj):

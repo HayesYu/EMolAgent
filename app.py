@@ -25,7 +25,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 
-DEFAULT_MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nnenv.ep154.pth")
+DEFAULT_MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resources/models/nnenv.ep154.pth")
 
 WELCOME_MESSAGE = """您好！我是 EMolAgent，您的计算化学 AI 助手。
 
