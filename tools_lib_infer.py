@@ -81,12 +81,9 @@ def search_molecule_in_db(query_name: str, mol_type: str, output_dir: str) -> st
         if found_row:
             # 提取分子并保存到一个临时的单分子 DB 中，供 cluster_factory 使用
             safe_name = re.sub(r'[^A-Za-z0-9]', '_', query_name)
-            temp_db_name = f"found_{mol_type}_{safe_name}.db"
+            unique = f"{time.time_ns()}_{os.getpid()}"
+            temp_db_name = f"found_{mol_type}_{safe_name}_{unique}.db"
             temp_db_path = os.path.abspath(os.path.join(output_dir, temp_db_name))
-            
-            # 每次先删除旧的，保证干净
-            if os.path.exists(temp_db_path):
-                os.remove(temp_db_path)
 
             atoms = found_row.toatoms()
             kvp = (found_row.key_value_pairs or {}).copy()

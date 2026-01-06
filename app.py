@@ -159,8 +159,8 @@ def tool_build_optimize(ion_name: str, solvents_json: str, anions_json: str, run
         return "Error parsing JSON inputs."
 
     user_ws = get_user_workspace_from_ids(runtime.context.username, runtime.context.chat_id)
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
-    task_dir = os.path.join(user_ws, f"task_{timestamp}")
+    task_id = f"{time.strftime('%Y%m%d_%H%M%S')}_{time.time_ns()}"
+    task_dir = os.path.join(user_ws, f"task_{task_id}")
     return build_and_optimize_cluster(ion_name, solvents, anions, task_dir)
 
 
@@ -189,7 +189,8 @@ def tool_infer_pipeline(optimized_db_path: str, model_path: str | None = None) -
     else:
         task_root = db_dir
 
-    infer_out = os.path.join(task_root, "inference_results")
+    run_id = str(time.time_ns())
+    infer_out = os.path.join(task_root, f"inference_results_{run_id}")
     result_json_str = run_dm_infer_pipeline(optimized_db_path, model_path, infer_out)
 
     try:
@@ -197,7 +198,7 @@ def tool_infer_pipeline(optimized_db_path: str, model_path: str | None = None) -
         if res_dict.get("success"):
             csv_path = res_dict.get("csv_path")
             output_dir = res_dict.get("output_dir", infer_out)
-            zip_base_name = os.path.join(task_root, "analysis_package")
+            zip_base_name = os.path.join(task_root, f"analysis_package_{run_id}")
             zip_path = compress_directory(output_dir, zip_base_name)
 
             return (

@@ -63,8 +63,10 @@ def init_db():
     if not os.path.exists("data"):
         os.makedirs("data")
         
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(DB_FILE, timeout=30)
     c = conn.cursor()
+    c.execute("PRAGMA journal_mode=WAL;")
+    c.execute("PRAGMA synchronous=NORMAL;")
     
     # 用户表
     c.execute('''CREATE TABLE IF NOT EXISTS users (
@@ -104,7 +106,7 @@ def init_db():
 
 def register_user(username, password):
     """注册新用户"""
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(DB_FILE, timeout=30)
     c = conn.cursor()
     hashed = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
     uid = generate_id()
@@ -119,7 +121,7 @@ def register_user(username, password):
 
 def login_user(username, password):
     """用户登录，返回 user_id 和 username"""
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(DB_FILE, timeout=30)
     c = conn.cursor()
     c.execute("SELECT id, password_hash FROM users WHERE username = ?", (username,))
     data = c.fetchone()
@@ -135,7 +137,7 @@ def login_user(username, password):
 
 def create_conversation(user_id, title="New Chat"):
     """创建新会话"""
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(DB_FILE, timeout=30)
     c = conn.cursor()
     cid = generate_id()
     c.execute("INSERT INTO conversations (id, user_id, title) VALUES (?, ?, ?)", 
@@ -146,7 +148,7 @@ def create_conversation(user_id, title="New Chat"):
 
 def get_user_conversations(user_id):
     """获取用户的所有会话列表"""
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(DB_FILE, timeout=30)
     c = conn.cursor()
     c.execute("SELECT id, title, created_at FROM conversations WHERE user_id = ? ORDER BY created_at DESC", (user_id,))
     rows = c.fetchall()
@@ -155,7 +157,7 @@ def get_user_conversations(user_id):
 
 def update_conversation_title(conversation_id, new_title):
     """更新会话标题（通常用第一句话作为标题）"""
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(DB_FILE, timeout=30)
     c = conn.cursor()
     c.execute("UPDATE conversations SET title = ? WHERE id = ?", (new_title, conversation_id))
     conn.commit()
@@ -163,7 +165,7 @@ def update_conversation_title(conversation_id, new_title):
 
 def delete_conversation(conversation_id):
     """删除会话及其消息"""
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(DB_FILE, timeout=30)
     c = conn.cursor()
     c.execute("DELETE FROM messages WHERE conversation_id = ?", (conversation_id,))
     c.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
@@ -174,7 +176,7 @@ def delete_conversation(conversation_id):
 
 def add_message(conversation_id, role, content):
     """添加一条消息"""
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(DB_FILE, timeout=30)
     c = conn.cursor()
     mid = generate_id()
     c.execute("INSERT INTO messages (id, conversation_id, role, content) VALUES (?, ?, ?, ?)", 
@@ -185,7 +187,7 @@ def add_message(conversation_id, role, content):
 
 def get_conversation_messages(conversation_id):
     """获取某会话的所有消息"""
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(DB_FILE, timeout=30)
     c = conn.cursor()
     c.execute("SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY id ASC", (conversation_id,))
     rows = c.fetchall()
@@ -218,7 +220,7 @@ def cleanup_old_data(days=30):
     1. 删除 N 天前的消息 (根据消息自身的时间戳)。
     2. 删除 N 天前且不活跃的会话 (根据 updated_at 或 created_at)。
     """
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(DB_FILE, timeout=30)
     c = conn.cursor()
     
     # 计算截止时间 (使用 UTC 时间以匹配 SQL 的 CURRENT_TIMESTAMP)
