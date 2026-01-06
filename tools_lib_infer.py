@@ -16,8 +16,9 @@ from emoles.inference import infer_entry
 # ==========================================
 # 常量定义
 # ==========================================
-SOLVENT_DB_PATH = "cut_10_common.db" 
-ANION_DB_PATH = "anions.db"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+SOLVENT_DB_PATH = os.path.join(BASE_DIR, "cut_10_common.db")
+ANION_DB_PATH = os.path.join(BASE_DIR, "anions.db")
 
 class NumpyEncoder(json.JSONEncoder):
     def default(self, obj):
@@ -41,6 +42,7 @@ def search_molecule_in_db(query_name: str, mol_type: str, output_dir: str) -> st
     :param output_dir: 结果输出目录
     :return: 结果信息的 JSON 字符串 (包含是否找到，以及生成的 temp_db 路径)
     """
+    output_dir = os.path.abspath(output_dir)
     os.makedirs(output_dir, exist_ok=True)
     
     target_db = SOLVENT_DB_PATH if mol_type == "solvent" else ANION_DB_PATH
@@ -80,14 +82,19 @@ def search_molecule_in_db(query_name: str, mol_type: str, output_dir: str) -> st
             # 提取分子并保存到一个临时的单分子 DB 中，供 cluster_factory 使用
             safe_name = re.sub(r'[^A-Za-z0-9]', '_', query_name)
             temp_db_name = f"found_{mol_type}_{safe_name}.db"
-            temp_db_path = os.path.join(output_dir, temp_db_name)
+            temp_db_path = os.path.abspath(os.path.join(output_dir, temp_db_name))
             
             # 每次先删除旧的，保证干净
             if os.path.exists(temp_db_path):
                 os.remove(temp_db_path)
+
+            atoms = found_row.toatoms()
+            kvp = (found_row.key_value_pairs or {}).copy()
+            data = (found_row.data or {}).copy()
+            kvp.pop("name", None)
                 
             with connect(temp_db_path) as tmp_db:
-                tmp_db.write(found_row, name=query_name) # 写入时重命名为用户查询的名字，方便后续识别
+                tmp_db.write(atoms, name=query_name, data=data, **kvp) # 写入时重命名为用户查询的名字，方便后续识别
             
             return json.dumps({
                 "found": True,
@@ -147,8 +154,10 @@ def build_and_optimize_cluster(
         
         if anions_config:
             for a_item in anions_config:
-                if a_item.get('path') and os.path.exists(a_item.get('path')):
-                    anion_args.append(a_item['path'])
+                if a_item.get("path"):
+                    p = os.path.abspath(a_item["path"])
+                    if os.path.exists(p):
+                        anion_args.append(p)
                 elif a_item.get('smiles'):
                     anion_args.append(a_item['smiles'])
                 
@@ -213,9 +222,13 @@ def build_and_optimize_cluster(
         
         if os.path.exists(final_opt_dir):
             # 找里面最新的 db
-            dbs = [f for f in os.listdir(final_opt_dir) if f.endswith(".db")]
-            if dbs:
-                result_db = os.path.join(final_opt_dir, dbs[0])
+            preferred = os.path.join(final_opt_dir, "optimized_all.db")
+            if os.path.exists(preferred):
+                result_db = preferred
+            else:
+                dbs = [os.path.join(final_opt_dir, f) for f in os.listdir(final_opt_dir) if f.endswith(".db")]
+                if dbs:
+                    result_db = max(dbs, key=os.path.getmtime)
         
         # 如果没有优化结果 (比如 failed)，尝试找未优化的 all.db
         if not result_db:
@@ -257,6 +270,18 @@ def _dm_infer_worker(ase_db_path, model_path, output_dir, queue):
         
         # 在子进程中切换目录，安全
         os.chdir(output_dir)
+        if os.getenv("EMOL_DEBUG_CHARGE") == "1":
+            try:
+                with connect(ase_db_path) as _db:
+                    sample = []
+                    for i, row in enumerate(_db.select()):
+                        kvp = row.key_value_pairs or {}
+                        sample.append((row.id, kvp.get("xyz_file"), kvp.get("charge"), kvp.get("n_anion")))
+                        if i >= 4:
+                            break
+                print("[ChargeDebug] first rows:", sample)
+            except Exception as e:
+                print("[ChargeDebug] failed:", e)
 
         # ---------------------------
         # Step 1: DPTB Inference

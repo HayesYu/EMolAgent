@@ -3,76 +3,33 @@ import json
 import time
 import datetime
 import re
-import pandas as pd
-import streamlit as st
-from langchain_google_genai import ChatGoogleGenerativeAI
-import importlib
-
-def _import_attr(attr_name: str, module_candidates: list[str]):
-    last_err = None
-    for module_name in module_candidates:
-        try:
-            mod = importlib.import_module(module_name)
-            if hasattr(mod, attr_name):
-                return getattr(mod, attr_name)
-        except Exception as e:
-            last_err = e
-    raise ImportError(
-        f"Cannot import {attr_name} from any of {module_candidates}. Last error: {last_err}"
-    )
-
-# 1) AgentExecutor：不同版本所在位置不一样
-AgentExecutor = _import_attr(
-    "AgentExecutor",
-    [
-        "langchain.agents",
-        "langchain.agents.agent",
-        "langchain.agents.agent_executor",
-        "langchain.agents.executor",
-    ],
-)
-
-# 2) create_tool_calling_agent：找不到就退化到 create_react_agent（保证先能跑起来）
-try:
-    create_tool_calling_agent = _import_attr(
-        "create_tool_calling_agent",
-        [
-            "langchain.agents",
-            "langchain.agents.tool_calling_agent.base",
-            "langchain.agents.tool_calling_agent",
-        ],
-    )
-except ImportError:
-    create_react_agent = _import_attr(
-        "create_react_agent",
-        [
-            "langchain.agents",
-            "langchain.agents.react.agent",
-            "langchain.agents.react.base",
-        ],
-    )
-
-    def create_tool_calling_agent(llm, tools, prompt):
-        return create_react_agent(llm, tools, prompt)
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.messages import HumanMessage, AIMessage
-from langchain.tools import StructuredTool
-import extra_streamlit_components as stx
 import shutil
-from tools_lib_infer import (
-    search_molecule_in_db, 
-    build_and_optimize_cluster, 
-    run_dm_infer_pipeline, 
-    compress_directory
-)
-import database as db
+from dataclasses import dataclass
+from typing import Any
 
-# --- 全局常量定义 (保持在顶层) ---
+import streamlit as st
+import extra_streamlit_components as stx
+
+import database as db
+from tools_lib_infer import (
+    search_molecule_in_db,
+    build_and_optimize_cluster,
+    run_dm_infer_pipeline,
+    compress_directory,
+)
+
+from langchain.agents import create_agent
+from langchain.tools import tool, ToolRuntime
+from langchain.agents.structured_output import ToolStrategy
+from langgraph.checkpoint.memory import InMemorySaver
+from langchain_google_genai import ChatGoogleGenerativeAI
+
+
 DEFAULT_MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nnenv.ep154.pth")
 
 WELCOME_MESSAGE = """您好！我是 EMolAgent，您的计算化学 AI 助手。
 
-我专注于分子团簇的自动化建模与电子结构推断。我的工作流涵盖了从本地数据库检索分子、构建并优化团簇结构，到最终预测 HOMO/LUMO、偶极矩及静电势等关键性质。
+我专注于分子团簇的自动化建模与电子结构推断。我的工作流涵盖了从本地数据库检索分子、构建并优化团簇结构，到最终预测 HOMO/LUMO、偶极矩及静电势等关键电子性质。
 
 请告诉我您想研究的体系配置，例如：“请构建一个包含 1个Li离子、3个DME分子 和 1个FSI阴离子 的团簇。”
 
@@ -86,12 +43,12 @@ CUSTOM_SYSTEM_PREFIX = """
 2.  **数据库检索 (Search_Molecule_DB)**：
     * **优先查库**：对于提到的每个分子（溶剂或阴离子），**必须**先调用 `Search_Molecule_DB` 尝试在本地库中查找。
     * *Solvent* 查 'solvent' 类型，*Salt/Anion* 查 'anion' 类型。
-    * **确认反馈**：如果找到了（返回了 `db_path`），告诉用户“已在库中找到 DME (构型已校准)”。如果没找到，则准备使用 SMILES（你需要自己知道或询问用户 SMILES，常用分子如 DME=COCCOC 可自备）。
+    * **确认反馈**：如果找到了（返回了 `db_path`），告诉用户“已在库中找到 DME (构型已校准)”。如果没找到，则准备使用 SMILES（你需要自己知道或询问用户）。
 
 3.  **建模与优化 (Build_and_Optimize)**：
     * 构造 JSON 参数。
-    * 如果第2步找到了 DB 路径，参数里用 `{{"name": "DME", "path": "...", "count": 3}}`。
-    * 如果没找到，用 `{{"smiles": "...", "count": 3}}`。
+    * 如果第2步找到了 DB 路径，参数里用 `{"name": "DME", "path": "...", "count": 3}`。
+    * 如果没找到，用 `{"smiles": "...", "count": 3}`。
     * 此工具会自动进行 UMA 结构优化。
 
 4.  **电子结构推断 (Run_Inference_Pipeline)**：
@@ -109,12 +66,12 @@ CUSTOM_SYSTEM_PREFIX = """
 * 一步步执行，不要跳过“查库”步骤，因为库内构型质量最高。
 """
 
-# --- 页面配置 (必须是第一个 Streamlit 命令) ---
+# --- 页面配置 ---
 st.set_page_config(page_title="EMolAgent", page_icon="🧪", layout="wide")
 
 
 # ==============================================================================
-# 1. 辅助函数定义 (只定义，不执行)
+# 1. 辅助函数定义
 # ==============================================================================
 
 @st.cache_resource(ttl=86400)
@@ -123,8 +80,10 @@ def schedule_cleanup():
     db.cleanup_old_data(days=30)
     return True
 
+
 def get_manager():
     return stx.CookieManager(key="auth_cookie_manager")
+
 
 def validate_path_exists(path: str, description: str):
     """检查路径是否存在，不存在则终止"""
@@ -133,48 +92,96 @@ def validate_path_exists(path: str, description: str):
         st.stop()
     return True
 
+
 def get_user_workspace():
     """根据 session_state 中的用户信息和当前会话ID生成路径"""
     if "user" in st.session_state and st.session_state["user"]:
         username = st.session_state["user"]["username"]
-        safe_username = "".join([c for c in username if c.isalnum() or c in ('-','_')])
+        safe_username = "".join([c for c in username if c.isalnum() or c in ("-", "_")])
         chat_id = st.session_state.get("current_chat_id", "temp")
         workspace = os.path.join("users", safe_username, "output", str(chat_id))
     else:
         workspace = os.path.join("users", "guest", "output", "temp")
-    
+
     if not os.path.exists(workspace):
         os.makedirs(workspace, exist_ok=True)
     return workspace
 
-# --- Tool Functions (被 Agent 调用) ---
+def get_user_workspace_from_ids(username: str | None, chat_id: str | None):
+    safe_username = "".join([c for c in (username or "guest") if c.isalnum() or c in ("-", "_")])
+    safe_chat_id = str(chat_id or "temp")
+    workspace = os.path.join("users", safe_username, "output", safe_chat_id)
+    os.makedirs(workspace, exist_ok=True)
+    return workspace
 
-def tool_search_db(query_name: str, mol_type: str):
-    user_ws = get_user_workspace()
+
+# ==============================================================================
+# 2. Tools
+# ==============================================================================
+
+@dataclass
+class Context:
+    """Custom runtime context schema (可扩展：例如把 user_id 带进 tool runtime)."""
+    user_id: str | None = None
+    username: str | None = None
+    chat_id: str | None = None
+
+
+@tool(
+    "Search_Molecule_DB",
+    description=(
+        "Search for a molecule (solvent or anion) in the local calibrated database. "
+        "Args: query_name (e.g., 'DME'), mol_type ('solvent' or 'anion'). "
+        "Returns a string that includes db_path if found."
+    ),
+)
+def tool_search_db(query_name: str, mol_type: str, runtime: ToolRuntime[Context]) -> str:
+    """Search molecule in local DB (uses runtime.context for user workspace)."""
+    user_ws = get_user_workspace_from_ids(runtime.context.username, runtime.context.chat_id)
     search_dir = os.path.join(user_ws, "search_cache")
     return search_molecule_in_db(query_name, mol_type, search_dir)
 
-def tool_build_optimize(ion_name: str, solvents_json: str, anions_json: str):
+
+@tool(
+    "Build_and_Optimize",
+    description=(
+        "Build a cluster and optimize it using UMA. "
+        "Args: ion_name (str), solvents_json (JSON list), anions_json (JSON list). "
+        "Each list item should have 'count' and either 'path' or 'smiles'."
+    ),
+)
+def tool_build_optimize(ion_name: str, solvents_json: str, anions_json: str, runtime: ToolRuntime[Context]) -> str:
+    """Build+optimize cluster; outputs under the user's workspace."""
     try:
         solvents = json.loads(solvents_json) if solvents_json else []
         anions = json.loads(anions_json) if anions_json else []
-    except:
+    except Exception:
         return "Error parsing JSON inputs."
 
-    user_ws = get_user_workspace()
+    user_ws = get_user_workspace_from_ids(runtime.context.username, runtime.context.chat_id)
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     task_dir = os.path.join(user_ws, f"task_{timestamp}")
     return build_and_optimize_cluster(ion_name, solvents, anions, task_dir)
 
-def tool_infer_pipeline(optimized_db_path: str, model_path: str = None):
+
+@tool(
+    "Run_Inference_Pipeline",
+    description=(
+        "Run DPTB inference and electronic structure analysis on optimized DB. "
+        "Args: optimized_db_path (str), model_path (optional). "
+        "Returns a string containing [[DOWNLOAD:...]] zip link on success."
+    ),
+)
+def tool_infer_pipeline(optimized_db_path: str, model_path: str | None = None) -> str:
+    """Run inference; returns human-readable result + download marker."""
     if model_path in ["None", "", None]:
         model_path = DEFAULT_MODEL_PATH
-    
+
     validate_path_exists(optimized_db_path, "Optimized DB")
-    
+
     db_dir = os.path.dirname(optimized_db_path)
     parent_dir = os.path.dirname(db_dir)
-    
+
     if os.path.basename(db_dir) == "final_optimized":
         task_root = parent_dir
     elif os.path.basename(db_dir).startswith("task_"):
@@ -184,7 +191,7 @@ def tool_infer_pipeline(optimized_db_path: str, model_path: str = None):
 
     infer_out = os.path.join(task_root, "inference_results")
     result_json_str = run_dm_infer_pipeline(optimized_db_path, model_path, infer_out)
-    
+
     try:
         res_dict = json.loads(result_json_str)
         if res_dict.get("success"):
@@ -192,47 +199,74 @@ def tool_infer_pipeline(optimized_db_path: str, model_path: str = None):
             output_dir = res_dict.get("output_dir", infer_out)
             zip_base_name = os.path.join(task_root, "analysis_package")
             zip_path = compress_directory(output_dir, zip_base_name)
-            
+
             return (
                 f"推理完成。\n"
                 f"CSV摘要路径: {csv_path}\n"
                 f"数据预览: {res_dict.get('data_preview')}\n"
                 f"[[DOWNLOAD:{zip_path}]]"
             )
-        else:
-            return f"推理出错: {result_json_str}"
+        return f"推理出错: {result_json_str}"
     except Exception as e:
         return f"Error processing inference results: {e}"
 
-# --- Tool 定义列表 (静态定义) ---
-tools = [
-    StructuredTool.from_function(
-        func=tool_search_db,
-        name="Search_Molecule_DB",
-        description="Search for a molecule (solvent or anion) in the local calibrated database. Returns a DB path if found. Args: query_name (e.g., 'DME'), mol_type ('solvent' or 'anion')."
-    ),
-    StructuredTool.from_function(
-        func=tool_build_optimize,
-        name="Build_and_Optimize",
-        description="Build a cluster and optimize it using UMA. Provide solvents/anions config as JSON lists. Each item should have 'count', and either 'path' (from Search tool) or 'smiles'. Example: solvents_json='[{\"name\":\"DME\", \"path\":\"...db\", \"count\":3}]'"
-    ),
-    StructuredTool.from_function(
-        func=tool_infer_pipeline,
-        name="Run_Inference_Pipeline",
-        description="Run DPTB inference and Electronic Structure Analysis on the optimized DB. Args: optimized_db_path."
-    )
-]
+
+TOOLS = [tool_search_db, tool_build_optimize, tool_infer_pipeline]
 
 
 # ==============================================================================
-# 2. 主要 UI 逻辑封装
+# 3. Agent 初始化
+# ==============================================================================
+
+@dataclass
+class ResponseFormat:
+    """Structured response schema (可选).
+
+    当前 UI 直接展示纯文本 output，并用 [[DOWNLOAD:...]] 做下载。
+    因此这里不强制 structured output，只是给未来扩展留接口。
+    """
+    output: str
+
+
+@st.cache_resource(show_spinner=False)
+def get_checkpointer() -> InMemorySaver:
+    # 单机内存 checkpoint：适合 Streamlit demo / 单机部署
+    return InMemorySaver()
+
+
+def build_agent(model_name: str, temperature: float, api_key: str):
+    """构建并返回 LangChain agent（每次参数变化时重建）"""
+    model = ChatGoogleGenerativeAI(
+        model=model_name,
+        google_api_key=api_key,
+        temperature=temperature,
+        timeout=30,
+        max_output_tokens=2000,
+    )
+
+    checkpointer = get_checkpointer()
+
+    agent = create_agent(
+        model=model,
+        tools=TOOLS,
+        system_prompt=CUSTOM_SYSTEM_PREFIX,
+        context_schema=Context,
+        # 如果后面想让 agent 输出结构化结果，可以启用这一行：
+        # response_format=ToolStrategy(ResponseFormat),
+        checkpointer=checkpointer,
+    )
+    return agent
+
+
+# ==============================================================================
+# 4. UI：登录 / 主界面
 # ==============================================================================
 
 def login_ui(cookie_manager):
     """处理登录和注册的 UI 渲染"""
     st.title("🧪 EMolAgent - 请先登录")
     tab1, tab2 = st.tabs(["登录", "注册"])
-    
+
     with tab1:
         with st.form("login_form"):
             username = st.text_input("用户名")
@@ -270,10 +304,68 @@ def login_ui(cookie_manager):
                 else:
                     st.error("请输入用户名和密码")
 
+def normalize_chat_content(content: Any) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, bytes):
+        try:
+            return content.decode("utf-8", errors="replace")
+        except Exception:
+            return str(content)
+
+    # Gemini/LangChain 有时是 list[dict] 形式的多段内容
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if item is None:
+                continue
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+                else:
+                    parts.append(json.dumps(item, ensure_ascii=False, default=str))
+            else:
+                parts.append(str(item))
+        return "\n".join([p for p in parts if p]).strip()
+
+    if isinstance(content, dict):
+        text = content.get("text")
+        if isinstance(text, str):
+            return text
+        return json.dumps(content, ensure_ascii=False, default=str)
+
+    return str(content)
+
+def render_message_with_download(role: str, content: Any, key_prefix: str):
+    """将 [[DOWNLOAD:...]] 变成可下载按钮，其余文本照常展示"""
+    text = normalize_chat_content(content)
+
+    with st.chat_message(role):
+        download_match = re.search(r"\[\[DOWNLOAD:(.*?)\]\]", text)
+        display_text = re.sub(r"\[\[DOWNLOAD:.*?\]\]", "", text).strip()
+        st.write(display_text)
+
+        if download_match:
+            file_path = download_match.group(1).strip()
+            if os.path.exists(file_path):
+                with open(file_path, "rb") as f:
+                    st.download_button(
+                        label="📦 下载分析结果压缩包 (.zip)",
+                        data=f,
+                        file_name=os.path.basename(file_path),
+                        mime="application/zip",
+                        key=f"{key_prefix}_download",
+                    )
+
 
 def main():
     """主函数：包含所有 Streamlit 的 UI 和执行逻辑"""
-    
+
     # 初始化
     schedule_cleanup()
     cookie_manager = get_manager()
@@ -293,14 +385,15 @@ def main():
     # 如果未登录，显示登录页并停止
     if st.session_state["user"] is None:
         login_ui(cookie_manager)
-        return # 替代 st.stop() 以便结构更清晰，不过在 main 中 return 等同于结束
+        return
 
-    # --- 已登录主界面 ---
     current_user = st.session_state["user"]
+    if "suppress_autocreate" not in st.session_state:
+        st.session_state["suppress_autocreate"] = False
 
     # 1. Sidebar
     with st.sidebar:
-        st.write(f"👤 **{current_user['username']}**") # 这一行之前报错，现在因为在 main 中且已登录，所以安全
+        st.write(f"👤 **{current_user['username']}**")
         if st.button("登出", type="secondary"):
             st.session_state["user"] = None
             st.session_state["messages"] = []
@@ -308,9 +401,10 @@ def main():
             st.session_state["logout_flag"] = True
             cookie_manager.delete("auth_token")
             st.rerun()
-        
+
         st.markdown("---")
         if st.button("➕ 新建对话", type="primary", use_container_width=True):
+            st.session_state["suppress_autocreate"] = False
             new_id = db.create_conversation(current_user["id"], title="New Chat")
             st.session_state["current_chat_id"] = new_id
             st.session_state["messages"] = [{"role": "assistant", "content": WELCOME_MESSAGE}]
@@ -323,15 +417,24 @@ def main():
             btn_type = "primary" if st.session_state.get("current_chat_id") == chat["id"] else "secondary"
             col1, col2 = st.columns([0.8, 0.2])
             with col1:
-                if st.button(f"📄 {chat['title']}", key=f"chat_{chat['id']}", type=btn_type, use_container_width=True):
+                if st.button(
+                    f"📄 {chat['title']}",
+                    key=f"chat_{chat['id']}",
+                    type=btn_type,
+                    use_container_width=True,
+                ):
                     st.session_state["current_chat_id"] = chat["id"]
                     msgs = db.get_conversation_messages(chat["id"])
                     st.session_state["messages"] = msgs if msgs else []
                     st.rerun()
             with col2:
                 if st.button("🗑️", key=f"del_{chat['id']}"):
-                    safe_username = "".join([c for c in current_user['username'] if c.isalnum() or c in ('-','_')])
-                    chat_folder = os.path.join("users", safe_username, "output", str(chat['id']))
+                    if len(conversations) == 1:
+                        st.session_state["suppress_autocreate"] = True
+                        st.session_state["current_chat_id"] = None
+                        st.session_state["messages"] = []
+                    safe_username = "".join([c for c in current_user["username"] if c.isalnum() or c in ("-", "_")])
+                    chat_folder = os.path.join("users", safe_username, "output", str(chat["id"]))
                     if os.path.exists(chat_folder):
                         try:
                             shutil.rmtree(chat_folder)
@@ -342,10 +445,14 @@ def main():
                         st.session_state["current_chat_id"] = None
                         st.session_state["messages"] = []
                     st.rerun()
-                    
+
         st.markdown("---")
         st.header("模型设置")
-        model_name = st.selectbox("选择模型", ["gemini-2.0-flash-exp", "gemini-1.5-pro", "gemini-1.5-flash"], index=0)
+        model_name = st.selectbox(
+            "选择模型",
+            ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash-exp"],
+            index=0,
+        )
         api_key = os.getenv("GOOGLE_API_KEY", "")
         temperature = st.slider("Temperature", 0.0, 1.0, 0.0)
 
@@ -358,10 +465,19 @@ def main():
             msgs = db.get_conversation_messages(latest_chat["id"])
             st.session_state["messages"] = msgs if msgs else []
         else:
-            new_id = db.create_conversation(current_user["id"], title="New Chat")
-            st.session_state["current_chat_id"] = new_id
-            st.session_state["messages"] = [{"role": "assistant", "content": WELCOME_MESSAGE}]
-            db.add_message(new_id, "assistant", WELCOME_MESSAGE)
+            if st.session_state.get("suppress_autocreate"):
+                st.session_state["current_chat_id"] = None
+                st.session_state["messages"] = []
+            else:
+                new_id = db.create_conversation(current_user["id"], title="New Chat")
+                st.session_state["current_chat_id"] = new_id
+                st.session_state["messages"] = [{"role": "assistant", "content": WELCOME_MESSAGE}]
+                db.add_message(new_id, "assistant", WELCOME_MESSAGE)
+
+    if st.session_state.get("current_chat_id") is None:
+        st.title("🧪 EMolAgent")
+        st.info("暂无对话，请在左侧点击“➕ 新建对话”。")
+        return
 
     # 3. LLM Setup
     if not api_key:
@@ -369,102 +485,95 @@ def main():
         st.stop()
 
     try:
-        llm = ChatGoogleGenerativeAI(
-            model=model_name,
-            google_api_key=api_key,
-            temperature=temperature,
-        )
+        agent = build_agent(model_name=model_name, temperature=temperature, api_key=api_key)
     except Exception as e:
-        st.error(f"模型连接失败: {e}")
+        st.error(f"模型/Agent 初始化失败: {e}")
         st.stop()
-
-    # Agent Prompt & Executor (在此处初始化，避免子进程执行)
-    prompt_template = ChatPromptTemplate.from_messages([
-        ("system", CUSTOM_SYSTEM_PREFIX),
-        MessagesPlaceholder(variable_name="chat_history"),
-        ("human", "{input}"),
-        MessagesPlaceholder(variable_name="agent_scratchpad"),
-    ])
-    
-    agent = create_tool_calling_agent(llm, tools, prompt_template)
-    agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True, max_iterations=10)
 
     # 4. Chat Interface
     st.title("🧪 EMolAgent")
 
+    if "messages" not in st.session_state:
+        st.session_state["messages"] = []
+
     for idx, msg in enumerate(st.session_state["messages"]):
-        with st.chat_message(msg["role"]):
-            content = msg["content"]
-            download_match = re.search(r"\[\[DOWNLOAD:(.*?)\]\]", content)
-            display_text = re.sub(r"\[\[DOWNLOAD:.*?\]\]", "", content).strip()
-            st.write(display_text)
-            if download_match:
-                file_path = download_match.group(1)
-                if os.path.exists(file_path):
-                    with open(file_path, "rb") as f:
-                        st.download_button(
-                            label="📦 下载分析结果压缩包 (.zip)",
-                            data=f,
-                            file_name=os.path.basename(file_path),
-                            mime="application/zip",
-                            key=f"history_btn_{idx}"
-                        )
+        render_message_with_download(
+            role=msg["role"],
+            content=msg["content"],
+            key_prefix=f"history_{idx}",
+        )
 
     # 5. Handle Input
     if prompt_input := st.chat_input("请输入指令..."):
         st.session_state.messages.append({"role": "user", "content": prompt_input})
         st.chat_message("user").write(prompt_input)
-        
+
         current_chat_id = st.session_state["current_chat_id"]
         db.add_message(current_chat_id, "user", prompt_input)
-        
-        if len(st.session_state.messages) <= 2: 
+
+        if len(st.session_state.messages) <= 2:
             db.update_conversation_title(current_chat_id, prompt_input[:20])
 
-        history_langchain = []
-        for m in st.session_state["messages"][:-1]:
-            if m["role"] == "user":
-                history_langchain.append(HumanMessage(content=m["content"]))
-            elif m["role"] == "assistant":
-                history_langchain.append(AIMessage(content=m["content"]))
+        # LangChain new agent expects {"messages": [...]} style
+        # 并且可以配合 checkpointer 使用 thread_id 来维持同一对话的短期记忆
+        config = {"configurable": {"thread_id": str(current_chat_id)}}
+        context = Context(
+            user_id=str(current_user.get("id")) if current_user else None,
+            username=current_user.get("username") if current_user else None,
+            chat_id=str(current_chat_id),
+        )
 
-        with st.chat_message("assistant"):
-            with st.spinner("正在思考和执行任务..."):
-                try:
-                    response = agent_executor.invoke(
-                        {
-                            "input": prompt_input,
-                            "chat_history": history_langchain 
-                        }
-                    )
-                    output_text = response["output"]
-                    download_match = re.search(r"\[\[DOWNLOAD:(.*?)\]\]", output_text)
-                    clean_text = re.sub(r"\[\[DOWNLOAD:.*?\]\]", "", output_text).strip()
-                    st.write(clean_text)
-                    
-                    if download_match:
-                        file_path = download_match.group(1)
-                        if os.path.exists(file_path):
-                            with open(file_path, "rb") as f:
-                                st.download_button(
-                                    label="📦 下载分析结果压缩包 (.zip)",
-                                    data=f,
-                                    file_name=os.path.basename(file_path),
-                                    mime="application/zip",
-                                    key="current_run_btn"
-                                )
-                    
-                    st.session_state.messages.append({"role": "assistant", "content": output_text})
-                    db.add_message(current_chat_id, "assistant", output_text)
-                    
-                except Exception as e:
-                    error_msg = f"执行出错: {str(e)}"
-                    st.error(error_msg)
-                    st.session_state.messages.append({"role": "assistant", "content": error_msg})
-                    db.add_message(current_chat_id, "assistant", error_msg)
+        with st.spinner("正在思考和执行任务..."):
+            try:
+                response: dict[str, Any] = agent.invoke(
+                    {"messages": [{"role": "user", "content": prompt_input}]},
+                    config=config,
+                    context=context,
+                )
+
+                # create_agent 的返回通常是一个 dict，里面含 messages。
+                # 这里做一个稳健提取：优先取最后一条 assistant message 的 content。
+                output_text = None
+                msgs = response.get("messages") if isinstance(response, dict) else None
+                if msgs and isinstance(msgs, list):
+                    # msgs 里可能是 dict 或 BaseMessage；都做兼容
+                    last = msgs[-1]
+                    if isinstance(last, dict):
+                        output_text = last.get("content")
+                    else:
+                        output_text = getattr(last, "content", None)
+
+                # 兜底：如果模型返回 structured_response 或 output 字段
+                if not output_text and isinstance(response, dict):
+                    output_text = response.get("output") or response.get("structured_response")
+
+                if not output_text:
+                    output_text = str(response)
+
+                output_text_str = normalize_chat_content(output_text)
+
+                render_message_with_download(
+                    role="assistant",
+                    content=output_text_str,
+                    key_prefix="current_run",
+                )
+
+                st.session_state.messages.append({"role": "assistant", "content": output_text_str})
+                db.add_message(current_chat_id, "assistant", output_text_str)
+
+            except Exception as e:
+                error_msg = f"执行出错: {str(e)}"
+                render_message_with_download(
+                    role="assistant",
+                    content=error_msg,
+                    key_prefix="current_run_error",
+                )
+                st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                db.add_message(current_chat_id, "assistant", error_msg)
+
 
 # ==============================================================================
-# 3. 程序入口保护 (Crucial for Multiprocessing)
+# 5. 程序入口保护
 # ==============================================================================
 
 if __name__ == "__main__":
