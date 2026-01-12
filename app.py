@@ -18,6 +18,13 @@ from tools_lib_infer import (
     compress_directory,
 )
 
+from knowledge_base import (
+    search_knowledge,
+    build_index,
+    get_index_stats,
+    LITERATURE_PATH,
+)
+
 from langchain.agents import create_agent
 from langchain.tools import tool, ToolRuntime
 from langchain.agents.structured_output import ToolStrategy
@@ -29,21 +36,30 @@ DEFAULT_MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "r
 
 WELCOME_MESSAGE = """您好！我是 EMolAgent，您的计算化学 AI 助手。
 
-我专注于分子团簇的自动化建模与电子结构推断。我的工作流涵盖了从本地数据库检索分子、构建并优化团簇结构，到最终预测 HOMO/LUMO、偶极矩及静电势等关键电子性质。
+我具备两大核心能力：
 
-请告诉我您想研究的体系配置，例如：“请构建一个包含 1个Li离子、3个DME分子 和 1个FSI阴离子 的团簇。”
+🔬 **分子团簇计算**
+从本地数据库检索分子、构建并优化团簇结构，预测 HOMO/LUMO、偶极矩及静电势等电子性质。
+示例：「请构建一个包含 1个Li离子、3个DME分子 和 1个FSI阴离子 的团簇」
 
-收到指令后，我将为您自动执行查库、建模及计算流程。"""
+📚 **文献知识问答**
+基于数百篇 AI for Science 和电解液领域文献，回答相关学术问题。
+示例：「什么是溶剂化结构？CIP和SSIP有什么区别？」「介绍一下 GNN 在分子性质预测中的应用」
+
+请告诉我您的需求，我将为您提供帮助！"""
 
 CUSTOM_SYSTEM_PREFIX = """
-你是一个计算化学 AI 助手 EMolAgent。请遵循以下工作流来处理用户的分子计算请求：
+你是一个计算化学 AI 助手 EMolAgent。你有两大核心能力：
+
+## 能力一：分子团簇计算
+请遵循以下工作流来处理用户的分子计算请求：
 
 1.  **解析需求**：识别用户想要的中心离子（如 Li）、溶剂（如 DME）和阴离子（如 FSI）及其数量。
 
 2.  **数据库检索 (Search_Molecule_DB)**：
     * **优先查库**：对于提到的每个分子（溶剂或阴离子），**必须**先调用 `Search_Molecule_DB` 尝试在本地库中查找。
     * *Solvent* 查 'solvent' 类型，*Salt/Anion* 查 'anion' 类型。
-    * **确认反馈**：如果找到了（返回了 `db_path`），告诉用户“已在库中找到 DME (构型已校准)”。如果没找到，则准备使用 SMILES（你需要自己知道或询问用户）。
+    * **确认反馈**：如果找到了（返回了 `db_path`），告诉用户"已在库中找到 DME (构型已校准)"。如果没找到，则准备使用 SMILES（你需要自己知道或询问用户）。
 
 3.  **建模与优化 (Build_and_Optimize)**：
     * 构造 JSON 参数。
@@ -58,12 +74,27 @@ CUSTOM_SYSTEM_PREFIX = """
 5.  **最终报告**：
     * 展示关键的电子性质（如HOMO/LUMO/Dipole/ESP等，从推断结果中读取）。
     * **必须保留** `[[DOWNLOAD:...]]` 链接以便用户下载结果。
-    * 最后说明“任务已完成”。
+    * 最后说明"任务已完成"。
+
+## 能力二：文献知识问答 (Search_Knowledge_Base)
+当用户询问以下类型的问题时，使用 `Search_Knowledge_Base` 工具：
+- AI for Science 相关模型和方法（如 GNN、Transformer、扩散模型等）
+- 电解液性质、溶剂化结构、离子传输机理
+- 电池材料、锂离子/钠离子电池
+- 分子模拟方法、DFT计算、机器学习势函数
+- 任何需要文献支撑的科学概念解释
+
+**知识问答工作流**：
+1. 理解用户问题的核心概念
+2. 调用 `Search_Knowledge_Base` 搜索相关文献
+3. 基于检索到的内容，结合你的知识进行综合回答
+4. **必须引用来源**，格式如：「根据文献 [xxx.pdf] ...」
 
 【注意】
-* 如果用户说“3个DME”，意思是 count=3。
+* 如果用户说"3个DME"，意思是 count=3。
 * FSI 通常是阴离子。
-* 一步步执行，不要跳过“查库”步骤，因为库内构型质量最高。
+* 一步步执行，不要跳过"查库"步骤，因为库内构型质量最高。
+* 对于知识性问题，优先使用知识库搜索，确保回答有文献依据。
 """
 
 # --- 页面配置 ---
@@ -211,8 +242,44 @@ def tool_infer_pipeline(optimized_db_path: str, model_path: str | None = None) -
     except Exception as e:
         return f"Error processing inference results: {e}"
 
+@tool(
+    "Search_Knowledge_Base",
+    description=(
+        "Search the literature knowledge base for AI4Science and electrolyte-related content. "
+        "Use this tool when user asks about: AI models, machine learning methods, electrolyte properties, "
+        "battery materials, molecular simulation theories, or any scientific concepts. "
+        "Args: query (str) - the search query in natural language, top_k (int, optional) - number of results. "
+        "Returns relevant excerpts from academic papers with source citations."
+    ),
+)
+def tool_search_knowledge(query: str, top_k: int = 5) -> str:
+    """Search the knowledge base for relevant literature content."""
+    api_key = os.getenv("GOOGLE_API_KEY", "")
+    if not api_key:
+        return "Error: Google API Key not configured."
+    
+    try:
+        results = search_knowledge(query, api_key, top_k=top_k)
+        
+        if not results:
+            return "未找到相关文献内容。请尝试换一种表达方式或更具体的关键词。"
+        
+        # 格式化输出
+        output_parts = [f"找到 {len(results)} 条相关文献内容：\n"]
+        
+        for i, r in enumerate(results, 1):
+            output_parts.append(
+                f"**[{i}] {r['source']}** (相关度: {r['relevance_score']:.2f})\n"
+                f"分类: {r['category'] or '根目录'}\n"
+                f"内容摘要:\n> {r['content'][:500]}{'...' if len(r['content']) > 500 else ''}\n"
+            )
+        
+        return "\n---\n".join(output_parts)
+    
+    except Exception as e:
+        return f"知识库搜索出错: {str(e)}"
 
-TOOLS = [tool_search_db, tool_build_optimize, tool_infer_pipeline]
+TOOLS = [tool_search_db, tool_build_optimize, tool_infer_pipeline, tool_search_knowledge]
 
 
 # ==============================================================================
@@ -456,6 +523,49 @@ def main():
         )
         api_key = os.getenv("GOOGLE_API_KEY", "")
         temperature = st.slider("Temperature", 0.0, 1.0, 0.0)
+
+        st.markdown("---")
+        st.header("📚 知识库管理")
+        
+        # 显示知识库状态
+        try:
+            kb_stats = get_index_stats(api_key)
+            if "error" not in kb_stats:
+                st.metric("已索引文档块", kb_stats.get("total_documents", 0))
+                st.caption(f"已索引文件数: {kb_stats.get('indexed_files', 0)}")
+            else:
+                st.warning("知识库未初始化")
+        except Exception:
+            st.warning("知识库未初始化")
+        
+        # 索引按钮
+        col_idx1, col_idx2 = st.columns(2)
+        with col_idx1:
+            if st.button("🔄 增量更新", use_container_width=True):
+                with st.spinner("正在更新知识库索引..."):
+                    try:
+                        stats = build_index(api_key, force_rebuild=False)
+                        st.success(
+                            f"索引完成！\n"
+                            f"新增: {stats['new_indexed']}, "
+                            f"跳过: {stats['skipped']}, "
+                            f"失败: {stats['failed']}"
+                        )
+                    except Exception as e:
+                        st.error(f"索引失败: {e}")
+        
+        with col_idx2:
+            if st.button("🔨 重建索引", use_container_width=True):
+                with st.spinner("正在重建知识库索引（这可能需要几分钟）..."):
+                    try:
+                        stats = build_index(api_key, force_rebuild=True)
+                        st.success(
+                            f"重建完成！\n"
+                            f"共索引 {stats['new_indexed']} 个文件, "
+                            f"{stats['total_chunks']} 个文档块"
+                        )
+                    except Exception as e:
+                        st.error(f"索引失败: {e}")
 
     # 2. Session Init
     if st.session_state.get("current_chat_id") is None:
