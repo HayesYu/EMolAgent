@@ -518,7 +518,7 @@ def main():
         st.header("模型设置")
         model_name = st.selectbox(
             "选择模型",
-            ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash-exp"],
+            ["gemini-3-flash-preview", "gemini-3-pro-preview", "gemini-2.5-pro"],
             index=0,
         )
         api_key = os.getenv("GOOGLE_API_KEY", "")

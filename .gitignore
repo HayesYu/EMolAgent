@@ -1,0 +1,15 @@
+# 忽略 Python 编译文件
+__pycache__/
+*.py[cod]
+
+# 忽略数据库和索引数据
+data/chroma_db/
+data/chat_app.db
+
+# 忽略用户输出目录
+users/
+
+# 忽略大模型文件
+resources/models/
+
+check_google_models.py
