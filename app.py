@@ -31,6 +31,9 @@ from langchain.agents.structured_output import ToolStrategy
 from langgraph.checkpoint.memory import InMemorySaver
 from langchain_google_genai import ChatGoogleGenerativeAI
 
+from mol_viewer import create_structure_preview_html, load_structure_from_db, create_gaussian_view_style_viewer
+import streamlit.components.v1 as components
+
 
 DEFAULT_MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resources/models/nnenv.ep154.pth")
 
@@ -54,6 +57,13 @@ CUSTOM_SYSTEM_PREFIX = """
 ## 能力一：分子团簇计算
 请遵循以下工作流来处理用户的分子计算请求：
 
+### 重要：识别用户意图
+- **只生成结构**：当用户说"生成一个结构"、"构建一个团簇"、"创建分子结构"等，**只调用** `Build_Structure_Only`，不要执行电子结构分析
+- **生成并分析**：当用户明确说"生成并分析"、"计算电子结构"、"预测性质"等，才执行完整流程（包括 `Run_Inference_Pipeline`）
+- **对已有结构分析**：当用户说"对上面的结构进行分析"、"分析刚才生成的结构"等，从对话历史中找到之前生成的 `optimized_db` 路径，然后调用 `Run_Inference_Pipeline`
+
+### 工作流步骤：
+
 1.  **解析需求**：识别用户想要的中心离子（如 Li）、溶剂（如 DME）和阴离子（如 FSI）及其数量。
 
 2.  **数据库检索 (Search_Molecule_DB)**：
@@ -61,20 +71,25 @@ CUSTOM_SYSTEM_PREFIX = """
     * *Solvent* 查 'solvent' 类型，*Salt/Anion* 查 'anion' 类型。
     * **确认反馈**：如果找到了（返回了 `db_path`），告诉用户"已在库中找到 DME (构型已校准)"。如果没找到，则准备使用 SMILES（你需要自己知道或询问用户）。
 
-3.  **建模与优化 (Build_and_Optimize)**：
+3.  **建模与优化**：
+    * **只生成结构时**：调用 `Build_Structure_Only`，返回结构路径和可视化预览
+    * **完整分析时**：调用 `Build_and_Optimize`（会自动进行 UMA 结构优化）
     * 构造 JSON 参数。
     * 如果第2步找到了 DB 路径，参数里用 `{"name": "DME", "path": "...", "count": 3}`。
     * 如果没找到，用 `{"smiles": "...", "count": 3}`。
-    * 此工具会自动进行 UMA 结构优化。
 
-4.  **电子结构推断 (Run_Inference_Pipeline)**：
-    * 使用上一步生成的 `optimized_db` 路径。
-    * 执行推断并分析性质（HOMO/LUMO/Dipole等）。
+4.  **电子结构推断 (Run_Inference_Pipeline)**（仅当用户需要分析时）：
+    * 使用上一步或对话历史中的 `optimized_db` 路径
+    * 执行推断并分析性质（HOMO/LUMO/Dipole等）
 
 5.  **最终报告**：
-    * 展示关键的电子性质（如HOMO/LUMO/Dipole/ESP等，从推断结果中读取）。
-    * **必须保留** `[[DOWNLOAD:...]]` 链接以便用户下载结果。
-    * 最后说明"任务已完成"。
+    * 如果只是生成结构：展示 3D 预览，告知用户可以后续进行分析
+    * 如果执行了分析：展示电子性质，**必须保留** `[[DOWNLOAD:...]]` 链接
+
+### 记住：
+- 用户说"生成结构"≠ 需要电子结构分析
+- 用户说"分析上面的结构"时，从之前的对话历史中查找 `optimized_db` 路径
+- 确保结构路径被正确记录，以便后续分析使用
 
 ## 能力二：文献知识问答 (Search_Knowledge_Base)
 当用户询问以下类型的问题时，使用 `Search_Knowledge_Base` 工具：
@@ -95,6 +110,7 @@ CUSTOM_SYSTEM_PREFIX = """
 * FSI 通常是阴离子。
 * 一步步执行，不要跳过"查库"步骤，因为库内构型质量最高。
 * 对于知识性问题，优先使用知识库搜索，确保回答有文献依据。
+* **关键**：当用户后续说"对上面生成的结构进行分析"时，请从之前的对话中找到 optimized_db 的路径，并调用 Run_Inference_Pipeline。
 """
 
 # --- 页面配置 ---
@@ -194,6 +210,44 @@ def tool_build_optimize(ion_name: str, solvents_json: str, anions_json: str, run
     task_dir = os.path.join(user_ws, f"task_{task_id}")
     return build_and_optimize_cluster(ion_name, solvents, anions, task_dir)
 
+@tool(
+    "Build_Structure_Only",
+    description=(
+        "Build and optimize a molecular cluster structure WITHOUT running electronic structure analysis. "
+        "Use this when user just wants to generate/build a structure. "
+        "Args: ion_name (str), solvents_json (JSON list), anions_json (JSON list). "
+        "Returns the optimized structure path and a 3D visualization for user confirmation."
+    ),
+)
+def tool_build_structure_only(ion_name: str, solvents_json: str, anions_json: str, runtime: ToolRuntime[Context]) -> str:
+    """Build+optimize cluster without inference; returns structure path + visualization marker."""
+    try:
+        solvents = json.loads(solvents_json) if solvents_json else []
+        anions = json.loads(anions_json) if anions_json else []
+    except Exception:
+        return "Error parsing JSON inputs."
+
+    user_ws = get_user_workspace_from_ids(runtime.context.username, runtime.context.chat_id)
+    task_id = f"{time.strftime('%Y%m%d_%H%M%S')}_{time.time_ns()}"
+    task_dir = os.path.join(user_ws, f"task_{task_id}")
+    
+    result = build_and_optimize_cluster(ion_name, solvents, anions, task_dir)
+    
+    try:
+        res_dict = json.loads(result)
+        if res_dict.get("success"):
+            optimized_db = res_dict.get("optimized_db")
+            # Store the path in session for later reference
+            return json.dumps({
+                "success": True,
+                "optimized_db": optimized_db,
+                "task_dir": task_dir,
+                "msg": f"结构已生成并优化完成。路径: {optimized_db}",
+                "visualization_marker": f"[[STRUCTURE_PREVIEW:{optimized_db}]]"
+            })
+        return result
+    except:
+        return result
 
 @tool(
     "Run_Inference_Pipeline",
@@ -279,7 +333,7 @@ def tool_search_knowledge(query: str, top_k: int = 5) -> str:
     except Exception as e:
         return f"知识库搜索出错: {str(e)}"
 
-TOOLS = [tool_search_db, tool_build_optimize, tool_infer_pipeline, tool_search_knowledge]
+TOOLS = [tool_search_db, tool_build_structure_only, tool_build_optimize, tool_infer_pipeline, tool_search_knowledge]
 
 
 # ==============================================================================
@@ -410,14 +464,47 @@ def normalize_chat_content(content: Any) -> str:
     return str(content)
 
 def render_message_with_download(role: str, content: Any, key_prefix: str):
-    """将 [[DOWNLOAD:...]] 变成可下载按钮，其余文本照常展示"""
+    """将 [[DOWNLOAD:...]] 和 [[STRUCTURE_PREVIEW:...]] 变成可交互组件"""
     text = normalize_chat_content(content)
 
     with st.chat_message(role):
+        # 处理结构预览标记
+        structure_match = re.search(r"\[\[STRUCTURE_PREVIEW:(.*?)\]\]", text)
         download_match = re.search(r"\[\[DOWNLOAD:(.*?)\]\]", text)
-        display_text = re.sub(r"\[\[DOWNLOAD:.*?\]\]", "", text).strip()
+        
+        # 清理显示文本
+        display_text = re.sub(r"\[\[STRUCTURE_PREVIEW:.*?\]\]", "", text)
+        display_text = re.sub(r"\[\[DOWNLOAD:.*?\]\]", "", display_text).strip()
         st.write(display_text)
 
+        # 显示 3D 结构预览
+        if structure_match:
+            db_path = structure_match.group(1).strip()
+            if os.path.exists(db_path):
+                st.markdown("### 📊 结构预览")
+                
+                # 创建弹出式预览
+                with st.expander("🔬 点击查看 3D 分子结构 (可交互)", expanded=True):
+                    try:
+                        atoms = load_structure_from_db(db_path)
+                        if atoms:
+                            viewer_html = create_gaussian_view_style_viewer(
+                                atoms,
+                                width=650,
+                                height=500,
+                                style="sphere+stick",
+                                add_lighting=True
+                            )
+                            components.html(viewer_html, height=550, scrolling=False)
+                            
+                            st.caption(f"📁 结构路径: `{db_path}`")
+                            st.info("💡 提示：您可以说「对上面生成的结构进行电子结构分析」来继续分析")
+                        else:
+                            st.warning("无法加载结构预览")
+                    except Exception as e:
+                        st.error(f"结构预览失败: {e}")
+
+        # 处理下载按钮
         if download_match:
             file_path = download_match.group(1).strip()
             if os.path.exists(file_path):
