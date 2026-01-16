@@ -11,6 +11,7 @@ from ase.db import connect
 from ase import Atoms
 import py3Dmol
 import numpy as np
+from logger_config import logger
 
 # Element colors (CPK coloring scheme similar to Gaussian View)
 ELEMENT_COLORS = {
@@ -153,7 +154,7 @@ def load_structure_from_db(db_path: str, index: int = 0) -> Optional[Atoms]:
             row = list(db.select())[index]
             return row.toatoms()
     except Exception as e:
-        print(f"Error loading structure: {e}")
+        logger.error(f"Error loading structure: {e}")
         return None
 
 

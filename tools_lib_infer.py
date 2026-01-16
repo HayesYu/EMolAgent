@@ -12,6 +12,7 @@ from ase.db import connect
 from emoles.py3Dmol import cube_2_html, cubes_2_htmls
 import cluster_factory
 from emoles.inference import infer_entry
+from logger_config import logger
 
 # ==========================================
 # 常量定义
@@ -193,8 +194,10 @@ def build_and_optimize_cluster(
         max_a = max(final_a_counts) if "AGG" in cats else (1 if "CIP" in cats else 0)
         max_total = max_s + max_a
 
-        print(f"Calling Cluster Factory: Solv={solvent_args}, Anion={anion_args}")
-        print(f"Plan: Cats={cats}, S_Counts={final_s_counts}, A_Counts(AGG)={final_a_counts}")
+        # print(f"Calling Cluster Factory: Solv={solvent_args}, Anion={anion_args}")
+        logger.info(f"Calling Cluster Factory: Solv={solvent_args}, Anion={anion_args}")
+        # print(f"Plan: Cats={cats}, S_Counts={final_s_counts}, A_Counts(AGG)={final_a_counts}")
+        logger.info(f"Plan: Cats={cats}, S_Counts={final_s_counts}, A_Counts(AGG)={final_a_counts}")
         
         # 4. 调用 cluster_factory.entry
         # 直接利用 factory 的逻辑来处理列表组合
@@ -244,7 +247,8 @@ def build_and_optimize_cluster(
             return json.dumps({"success": False, "msg": "Cluster building failed, no output DB found."})
 
     except Exception as e:
-        traceback.print_exc()
+        # traceback.print_exc()
+        logger.exception("Error occurred")
         return f"Error in build_and_optimize_cluster: {str(e)}"
 
 # ==========================================
@@ -276,14 +280,15 @@ def _dm_infer_worker(ase_db_path, model_path, output_dir, queue):
                         sample.append((row.id, kvp.get("xyz_file"), kvp.get("charge"), kvp.get("n_anion")))
                         if i >= 4:
                             break
-                print("[ChargeDebug] first rows:", sample)
+                # print("[ChargeDebug] first rows:", sample)
+                logger.debug(f"[ChargeDebug] first rows: {sample}")
             except Exception as e:
-                print("[ChargeDebug] failed:", e)
+                logger.debug(f"[ChargeDebug] failed: {e}")
 
         # ---------------------------
         # Step 1: DPTB Inference
         # ---------------------------
-        print(">>> Starting DPTB Inference (Subprocess)...")
+        logger.info(">>> Starting DPTB Inference (Subprocess)...")
         # 调用 infer_entry 中的实现
         infer_entry.dptb_infer_from_ase_db(
             ase_db_path=ase_db_path,
@@ -303,12 +308,12 @@ def _dm_infer_worker(ase_db_path, model_path, output_dir, queue):
                 npy_results_dir = d
                 break
         
-        print(f"Using NPY results dir: {npy_results_dir}")
+        logger.info(f"Using NPY results dir: {npy_results_dir}")
 
         # ---------------------------
         # Step 2: DM Inference (Properties & Cubes)
         # ---------------------------
-        print(">>> Starting DM Property Inference (via infer_entry)...")
+        logger.info(">>> Starting DM Property Inference (via infer_entry)...")
         
         # 使用 infer_entry.dm_infer_entry 进行一站式属性计算
         summary_data = infer_entry.dm_infer_entry(
@@ -324,12 +329,12 @@ def _dm_infer_worker(ase_db_path, model_path, output_dir, queue):
             summary_filename="inference_summary.npz"
         )
         
-        print(">>> Generating HTML visualizations for Cube files...")
+        logger.info(">>> Generating HTML visualizations for Cube files...")
         try:
             cubes_2_htmls(output_dir, iso_value=0.03)
         except Exception as e:
-            print(f"Warning: HTML generation failed: {e}")
-            traceback.print_exc()
+            logger.warning(f"Warning: HTML generation failed: {e}")
+            logger.exception("Error occurred")
 
         # ---------------------------
         # Step 3: Format Output
@@ -351,7 +356,7 @@ def _dm_infer_worker(ase_db_path, model_path, output_dir, queue):
         queue.put({"status": "success", "data": result})
 
     except Exception as e:
-        traceback.print_exc()
+        logger.exception("Error occurred")
         queue.put({"status": "error", "message": f"Pipeline Failed: {str(e)}"})
 
 def run_dm_infer_pipeline(ase_db_path: str, model_path: str, output_dir: str):

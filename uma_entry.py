@@ -9,6 +9,8 @@ from ase.db import connect
 from ase.optimize import LBFGS
 from tqdm import tqdm
 
+from logger_config import logger
+
 # Optional import for SMILES processing
 try:
     from rdkit import Chem
@@ -67,7 +69,7 @@ def prepare_input_source(workspace: str, input_db: str = None, smiles_list: list
     # Case 1: SMILES provided -> Generate temp DB
     if smiles_list:
         temp_db_path = os.path.join(workspace, 'temp_smiles_input.db')
-        print(f"Generating 3D structures from {len(smiles_list)} SMILES -> {temp_db_path} ...")
+        logger.info(f"Generating 3D structures from {len(smiles_list)} SMILES -> {temp_db_path} ...")
 
         # Clean previous temp file if exists
         if os.path.exists(temp_db_path):
@@ -81,7 +83,7 @@ def prepare_input_source(workspace: str, input_db: str = None, smiles_list: list
                     name = f"smiles_{i}_{sanitize_name(smi[:10])}"
                     db.write(atoms, name=name, smiles=smi)
                 except Exception as e:
-                    print(f"[Warning] Failed to convert SMILES '{smi}': {e}")
+                    logger.warning(f"Failed to convert SMILES '{smi}': {e}")
 
         return temp_db_path
 
@@ -116,7 +118,7 @@ def entry(
     # Note: If reusing workspace for multiple steps, be careful.
     # Here we assume entry() controls its specific workspace folder.
     if os.path.exists(out_db_path):
-        if verbose: print(f"Removing existing output DB: {out_db_path}")
+        if verbose: logger.debug(f"Removing existing output DB: {out_db_path}")
         os.remove(out_db_path)
 
     for d in [traj_dir, out_xyz_dir]:
@@ -128,10 +130,10 @@ def entry(
     active_input_db = prepare_input_source(workspace, input_db, smiles)
 
     if verbose:
-        print(f"Workdir: {workspace}\nInput: {active_input_db}\nOutput: {out_db_path}")
+        logger.info(f"Workdir: {workspace}\nInput: {active_input_db}\nOutput: {out_db_path}")
 
     # 3. Model Loading
-    if verbose: print("Loading FAIRChem model...")
+    if verbose: logger.info("Loading FAIRChem model...")
     # Ensure atom_refs cache is in the workspace or a temp loc to avoid permission issues
     atom_refs = get_isolated_atomic_energies(DEFAULT_MODEL_NAME, workspace)
     predictor = load_predict_unit(checkpoint_path, "default", None, device, atom_refs)
@@ -188,7 +190,7 @@ def entry(
                 spin = int(kvp.get('spin', 1)) if kvp.get('spin') is not None else 1
 
             except Exception as e:
-                print(f"[ERROR] Row {row.id}: Charge parsing failed: {e}, raw_charge={raw_charge}, raw_n_anion={raw_n_anion}")
+                logger.error(f"Row {row.id}: Charge parsing failed: {e}, raw_charge={raw_charge}, raw_n_anion={raw_n_anion}")
                 charge, spin = 1, 1
 
             # Set properties (FAIRChem requires strict int types)
@@ -236,7 +238,7 @@ def entry(
                 if show_progress:
                     tqdm.write(msg)
                 else:
-                    print(msg)
+                    logger.error(msg)
 
     return out_db_path
 
@@ -272,7 +274,7 @@ def main():
         show_progress=args.progress
     )
 
-    print(f"\nOptimization finished. Output DB: {out_path}")
+    logger.info(f"\nOptimization finished. Output DB: {out_path}")
 
 
 if __name__ == "__main__":

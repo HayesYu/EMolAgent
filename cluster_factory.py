@@ -11,6 +11,8 @@ from ase.db import connect
 from ase.io import write
 from tqdm import tqdm
 
+from logger_config import logger
+
 # Import the build_cluster function
 from emoles.build.cluster import build_cluster
 
@@ -73,7 +75,7 @@ def optimize_monomers(entries: List[Dict], prefix: str, root_workspace: str, dev
     Takes a list of raw entries (from SMILES), creates a temp DB,
     optimizes them via UMA, and returns the optimized entries.
     """
-    print(f"\n[Pre-Optimization] detected SMILES input for {prefix}. Optimizing monomers with UMA...")
+    logger.info(f"\n[Pre-Optimization] detected SMILES input for {prefix}. Optimizing monomers with UMA...")
 
     # 1. Create a temporary workspace for monomer optimization
     temp_workspace = os.path.join(root_workspace, f"temp_opt_{prefix.lower()}")
@@ -100,7 +102,7 @@ def optimize_monomers(entries: List[Dict], prefix: str, root_workspace: str, dev
                 try:
                     atoms_obj = uma_entry.smiles_to_atoms(atoms_obj)
                 except Exception as e:
-                    print(f"  Error embedding {ent['name']}: {e}")
+                    logger.error(f"  Error embedding {ent['name']}: {e}")
                     continue
 
             # Default charge guessing for monomers (Solvent=0, Anion=-1 usually)
@@ -126,7 +128,7 @@ def optimize_monomers(entries: List[Dict], prefix: str, root_workspace: str, dev
     # 4. Load the optimized results
     optimized_entries = load_db_entries(optimized_db_path, show_progress=False)
 
-    print(f"[Pre-Optimization] Done. Loaded {len(optimized_entries)} optimized {prefix} monomers.\n")
+    logger.info(f"[Pre-Optimization] Done. Loaded {len(optimized_entries)} optimized {prefix} monomers.\n")
     return optimized_entries
 
 
@@ -181,11 +183,11 @@ def normalize_input_data(source: Union[str, List[str], List[Dict], None],
         for item in source:
             # 判断是否为数据库文件路径
             if item.endswith('.db') or item.endswith('.json'):
-                print(f"Loading {prefix} from DB: {item}")
+                logger.info(f"Loading {prefix} from DB: {item}")
                 try:
                     all_entries.extend(load_db_entries(item, show_progress))
                 except Exception as e:
-                    print(f"Error loading {item}: {e}")
+                    logger.error(f"Error loading {item}: {e}")
             else:
                 # 否则视为 SMILES 字符串
                 smiles_batch.append(item)
@@ -389,12 +391,12 @@ def build_from_plan(
                     stats['built'] += 1
                     stats[cat] += 1
                     if verbose and not show_progress:
-                        print(f"  ✓ {cat}: {fname} (Charge: {it['charge']})")
+                        logger.info(f"  ✓ {cat}: {fname} (Charge: {it['charge']})")
 
                 except Exception as e:
                     stats['failed'] += 1
                     if verbose:
-                        print(f"  ✗ Failed: {solvent_name} + {anion_name}: {e}")
+                        logger.error(f"  ✗ Failed: {solvent_name} + {anion_name}: {e}")
                     # traceback.print_exc()
 
             if show_progress:
@@ -443,7 +445,7 @@ def entry(
     ssip_n = len(plan['SSIP'])
     cip_n = len(plan['CIP'])
     agg_n = len(plan['AGG'])
-    print(f"\nPlan: SSIP={ssip_n}, CIP={cip_n}, AGG={agg_n} => Total: {ssip_n + cip_n + agg_n}")
+    logger.info(f"\nPlan: SSIP={ssip_n}, CIP={cip_n}, AGG={agg_n} => Total: {ssip_n + cip_n + agg_n}")
 
     if plan_only:
         return {}
@@ -471,17 +473,16 @@ def entry(
         show_progress=show_progress
     )
 
-    print(f"Build phase done. Success: {stats['built']}/{stats['attempted']}.")
+    logger.info(f"Build phase done. Success: {stats['built']}/{stats['attempted']}.")
 
     # 4. Post-Optimization (Optional but Default)
     if optimize_result and stats['built'] > 0:
         raw_db_path = str(out_dirs['ALL']['db'])
         final_opt_workspace = out_path / "final_optimized"
 
-        print("\n" + "=" * 50)
-        print(f"Starting UMA Post-Optimization for {stats['built']} clusters...")
-        print("=" * 50)
-
+        logger.info("\n" + "=" * 50)
+        logger.info(f"Starting UMA Post-Optimization for {stats['built']} clusters...")
+        logger.info("=" * 50)
         optimized_db_path = uma_entry.entry(
             input_db=raw_db_path,
             workspace=str(final_opt_workspace),
@@ -489,7 +490,7 @@ def entry(
             verbose=verbose,
             show_progress=show_progress
         )
-        print(f"\nOptimization Complete. Final DB: {optimized_db_path}")
+        logger.info(f"\nOptimization Complete. Final DB: {optimized_db_path}")
 
     return stats
 

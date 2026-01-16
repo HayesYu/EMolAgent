@@ -10,6 +10,8 @@ from typing import Any
 import streamlit as st
 import extra_streamlit_components as stx
 
+from logger_config import logger
+
 import database as db
 from tools_lib_infer import (
     search_molecule_in_db,

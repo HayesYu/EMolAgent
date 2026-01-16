@@ -6,6 +6,7 @@ import datetime
 import time
 import random
 import threading
+from logger_config import logger
 
 class SimpleSnowflake:
     def __init__(self, datacenter_id=1, worker_id=1):
@@ -246,7 +247,7 @@ def cleanup_old_data(days=30):
         
         conn.commit()
     except Exception as e:
-        print(f"Cleanup error: {e}")
+        logger.error(f"Cleanup error: {e}")
     finally:
         conn.close()
 

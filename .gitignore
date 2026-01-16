@@ -9,6 +9,9 @@ data/chat_app.db
 # 忽略用户输出目录
 users/
 
+# 忽略日志文件
+logs/
+
 # 忽略大模型文件
 resources/models/
 
