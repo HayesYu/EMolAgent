@@ -44,6 +44,8 @@ import streamlit.components.v1 as components
 
 DEFAULT_MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resources/models/nnenv.ep154.pth")
 
+ADMIN_USERS = ["hayes"]
+
 WELCOME_MESSAGE = """您好！我是 EMolAgent，您的计算化学 AI 助手。
 
 我具备两大核心能力：
@@ -524,11 +526,28 @@ def render_message_with_download(role: str, content: Any, key_prefix: str):
             with tab_homo:
                 if orbital_files.get('homo') and os.path.exists(orbital_files['homo']):
                     try:
+                        # 等值面滑块控制
+                        st.markdown("**等值面设置**")
+                        col1, col2 = st.columns([3, 1])
+                        with col1:
+                            homo_iso = st.slider(
+                                "等值面大小",
+                                min_value=0.005,
+                                max_value=0.1,
+                                value=0.02,
+                                step=0.005,
+                                format="%.3f",
+                                key=f"{key_prefix}_homo_iso",
+                                help="调大：轨道包络面收缩，显示高电子密度区域；调小：轨道包络面扩展，显示更大范围"
+                            )
+                        with col2:
+                            st.metric("当前值", f"{homo_iso:.3f}")
+                        
                         homo_html = create_orbital_viewer(
                             orbital_files['homo'],
                             width=650,
                             height=500,
-                            iso_value=0.02,
+                            iso_value=homo_iso,
                             orbital_type="HOMO"
                         )
                         components.html(homo_html, height=560, scrolling=False)
@@ -541,11 +560,28 @@ def render_message_with_download(role: str, content: Any, key_prefix: str):
             with tab_lumo:
                 if orbital_files.get('lumo') and os.path.exists(orbital_files['lumo']):
                     try:
+                        # 等值面滑块控制
+                        st.markdown("**等值面设置**")
+                        col1, col2 = st.columns([3, 1])
+                        with col1:
+                            lumo_iso = st.slider(
+                                "等值面大小",
+                                min_value=0.005,
+                                max_value=0.1,
+                                value=0.02,
+                                step=0.005,
+                                format="%.3f",
+                                key=f"{key_prefix}_lumo_iso",
+                                help="调大：轨道包络面收缩，显示高电子密度区域；调小：轨道包络面扩展，显示更大范围"
+                            )
+                        with col2:
+                            st.metric("当前值", f"{lumo_iso:.3f}")
+                        
                         lumo_html = create_orbital_viewer(
                             orbital_files['lumo'],
                             width=650,
                             height=500,
-                            iso_value=0.02,
+                            iso_value=lumo_iso,
                             orbital_type="LUMO"
                         )
                         components.html(lumo_html, height=560, scrolling=False)
@@ -692,7 +728,7 @@ def main():
         st.markdown("---")
         st.header("📚 知识库管理")
         
-        # 显示知识库状态
+        # 显示知识库状态（所有用户可见）
         try:
             kb_stats = get_index_stats(api_key)
             if "error" not in kb_stats:
@@ -703,34 +739,35 @@ def main():
         except Exception:
             st.warning("知识库未初始化")
         
-        # 索引按钮
-        col_idx1, col_idx2 = st.columns(2)
-        with col_idx1:
-            if st.button("🔄 增量更新", use_container_width=True):
-                with st.spinner("正在更新知识库索引..."):
-                    try:
-                        stats = build_index(api_key, force_rebuild=False)
-                        st.success(
-                            f"索引完成！\n"
-                            f"新增: {stats['new_indexed']}, "
-                            f"跳过: {stats['skipped']}, "
-                            f"失败: {stats['failed']}"
-                        )
-                    except Exception as e:
-                        st.error(f"索引失败: {e}")
-        
-        with col_idx2:
-            if st.button("🔨 重建索引", use_container_width=True):
-                with st.spinner("正在重建知识库索引（这可能需要几分钟）..."):
-                    try:
-                        stats = build_index(api_key, force_rebuild=True)
-                        st.success(
-                            f"重建完成！\n"
-                            f"共索引 {stats['new_indexed']} 个文件, "
-                            f"{stats['total_chunks']} 个文档块"
-                        )
-                    except Exception as e:
-                        st.error(f"索引失败: {e}")
+        # 索引按钮 - 仅管理员可见
+        if current_user.get("username") in ADMIN_USERS:
+            col_idx1, col_idx2 = st.columns(2)
+            with col_idx1:
+                if st.button("🔄 增量更新", use_container_width=True):
+                    with st.spinner("正在更新知识库索引..."):
+                        try:
+                            stats = build_index(api_key, force_rebuild=False)
+                            st.success(
+                                f"索引完成！\n"
+                                f"新增: {stats['new_indexed']}, "
+                                f"跳过: {stats['skipped']}, "
+                                f"失败: {stats['failed']}"
+                            )
+                        except Exception as e:
+                            st.error(f"索引失败: {e}")
+            
+            with col_idx2:
+                if st.button("🔨 重建索引", use_container_width=True):
+                    with st.spinner("正在重建知识库索引（这可能需要几分钟）..."):
+                        try:
+                            stats = build_index(api_key, force_rebuild=True)
+                            st.success(
+                                f"重建完成！\n"
+                                f"共索引 {stats['new_indexed']} 个文件, "
+                                f"{stats['total_chunks']} 个文档块"
+                            )
+                        except Exception as e:
+                            st.error(f"索引失败: {e}")
 
     # 2. Session Init
     if st.session_state.get("current_chat_id") is None:
