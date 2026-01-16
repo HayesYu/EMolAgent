@@ -303,7 +303,6 @@ def build_from_plan(
         if show_progress:
             main_pbar = tqdm(total=total_items, desc="Building clusters", unit="cluster")
 
-        # 关键修正：确保循环在 with 块内部，这样写入时数据库连接是打开的
         for cat in ['SSIP', 'CIP', 'AGG']:
             items = plan.get(cat, [])
             if not items: continue
@@ -339,21 +338,23 @@ def build_from_plan(
                     )
 
                     # ==========================================
-                    # Explicitly set charges on the Atoms object
+                    # CRITICAL FIX: Clean and set charges properly
                     # ==========================================
+                    
+                    # 1. Remove any existing charge-related properties that might interfere
+                    if 'charge' in cluster.info:
+                        del cluster.info['charge']
+                    if 'initial_charges' in cluster.arrays:
+                        del cluster.arrays['initial_charges']
+                    # ASE stores per-atom charges in arrays['initial_charges'] sometimes
+                    
+                    # 2. Set the correct system-level properties
+                    cluster.info['charge'] = int(it['charge'])  # Force integer type
+                    cluster.info['spin'] = int(it['spin'])
+                    cluster.info['n_anion'] = int(it['n_anion'])
 
-                    # 1. Set global info properties for ASE/XYZ
-                    cluster.info['charge'] = it['charge']
-                    cluster.info['spin'] = it['spin']
-                    # Critical for UMA: Save anion count so optimizer knows the charge formula
-                    cluster.info['n_anion'] = it['n_anion']
-
-                    # 2. Identify the cation atom and force its charge to +1
-                    ion_symbol = ''.join([c for c in ion if c.isalpha()])
-                    for atom in cluster:
-                        if atom.symbol == ion_symbol:
-                            atom.charge = 1.0
-                            break
+                    # 3. DO NOT set atom.charge - it causes issues with ASE DB
+                    # The Li+ formal charge is implicit in the system charge
 
                     # ==========================================
                     # Save Files
@@ -371,9 +372,16 @@ def build_from_plan(
                     # ==========================================
                     kvp = {
                         'category': cat, 'ion': ion, 'solvent_name': solvent_name, 'anion_name': anion_name,
-                        'n_solv': it['n_solv'], 'n_anion': it['n_anion'], 'charge': it['charge'],
-                        'spin': it['spin'], 'xyz_file': fname, 'n_atoms_cluster': len(cluster)
+                        'n_solv': int(it['n_solv']), 'n_anion': int(it['n_anion']), 
+                        'charge': int(it['charge']),  # Force integer
+                        'spin': int(it['spin']), 
+                        'xyz_file': fname, 
+                        'n_atoms_cluster': len(cluster)
                     }
+
+                    # DEBUG
+                    # print(f"[DEBUG] Pre-write cluster.info['charge'] = {cluster.info.get('charge')}")
+                    # print(f"[DEBUG] Pre-write kvp['charge'] = {kvp['charge']}")
 
                     db_handles[cat].write(cluster, data=kvp, **kvp)
                     db_handles['ALL'].write(cluster, data=kvp, **kvp)

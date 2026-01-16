@@ -143,6 +143,10 @@ def entry(
 
     with connect(active_input_db) as src_db, connect(out_db_path) as tgt_db:
         total = src_db.count()
+        
+        # DEBUG: Print the actual DB path
+        # print(f"[DEBUG] UMA reading from: {active_input_db}")
+        
         rows = src_db.select()
         if show_progress:
             rows = tqdm(rows, total=total, desc="Optimizing", unit="mol")
@@ -151,25 +155,40 @@ def entry(
             atoms = row.toatoms()
             kvp = row.key_value_pairs.copy()
 
+            # DEBUG: Print full kvp
+            # print(f"[DEBUG] Row {row.id} full kvp: {kvp}")
+
             # --- Core Logic: Charge Calculation & Type Enforcing ---
+            charge = None
+            spin = 1
+            
+            raw_charge = kvp.get('charge')
+            raw_n_anion = kvp.get('n_anion')
+            
             try:
-                # 1. Try to read charge/spin directly
+                # 1. Try to read charge directly from kvp
                 if 'charge' in kvp:
-                    charge = int(float(kvp['charge']))
-                elif 'n_anion' in kvp:
-                    # Heuristic for cluster: Charge = 1 (Li) - N_Anions * 1
-                    n_anion = int(float(kvp['n_anion']))
-                    charge = int(1 - n_anion)
-                else:
-                    # Default: assume neutral or +1 based on context?
-                    # For safety in this specific Lithium context, default to +1 (often solvated Li)
-                    # unless it looks like a pure anion.
-                    charge = 1
+                    raw_val = kvp['charge']
+                    if raw_val is not None:
+                        charge = int(float(raw_val))
+                        # DEBUG: Confirm charge was read
+                        # print(f"[DEBUG] Row {row.id}: Read charge={charge} from kvp (raw={raw_val})")
+                
+                # 2. If charge is still None, calculate from n_anion
+                if charge is None:
+                    if 'n_anion' in kvp and kvp['n_anion'] is not None:
+                        n_anion = int(float(kvp['n_anion']))
+                        charge = int(1 - n_anion)
+                        # print(f"[DEBUG] Row {row.id}: Calculated charge={charge} from n_anion={n_anion}")
+                    else:
+                        # 3. Final fallback
+                        charge = 1
+                        # print(f"[DEBUG] Row {row.id}: Fallback to charge=1 (no charge or n_anion in kvp)")
+                
+                spin = int(kvp.get('spin', 1)) if kvp.get('spin') is not None else 1
 
-                spin = int(kvp.get('spin', 1))  # Default spin doublet for Li+ systems
-
-            except Exception:
-                # Fallback safety
+            except Exception as e:
+                print(f"[ERROR] Row {row.id}: Charge parsing failed: {e}, raw_charge={raw_charge}, raw_n_anion={raw_n_anion}")
                 charge, spin = 1, 1
 
             # Set properties (FAIRChem requires strict int types)
@@ -177,6 +196,9 @@ def entry(
             atoms.info['spin'] = spin
             kvp['charge'] = charge
             kvp['spin'] = spin
+            
+            # DEBUG: Confirm final values
+            # print(f"[DEBUG] Row {row.id}: Final charge={charge}, spin={spin}")
 
             # --- Optimization ---
             atoms.calc = calc
