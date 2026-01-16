@@ -5,10 +5,12 @@ Provides high-quality rendering with lighting, interactive rotation, and zoom.
 
 import os
 import json
-from typing import Optional, List, Dict, Any
+import glob
+from typing import Optional, List, Dict, Any, Tuple
 from ase.db import connect
 from ase import Atoms
 import py3Dmol
+import numpy as np
 
 # Element colors (CPK coloring scheme similar to Gaussian View)
 ELEMENT_COLORS = {
@@ -53,6 +55,17 @@ def atoms_to_xyz_string(atoms: Atoms, comment: str = "") -> str:
         lines.append(f"{sym:2s} {pos[0]:12.6f} {pos[1]:12.6f} {pos[2]:12.6f}")
     
     return "\n".join(lines)
+
+
+def atomic_number_to_symbol(z: int) -> str:
+    """Convert atomic number to element symbol."""
+    symbols = ['X', 'H', 'He', 'Li', 'Be', 'B', 'C', 'N', 'O', 'F', 'Ne',
+               'Na', 'Mg', 'Al', 'Si', 'P', 'S', 'Cl', 'Ar', 'K', 'Ca',
+               'Sc', 'Ti', 'V', 'Cr', 'Mn', 'Fe', 'Co', 'Ni', 'Cu', 'Zn',
+               'Ga', 'Ge', 'As', 'Se', 'Br', 'Kr']
+    if 0 <= z < len(symbols):
+        return symbols[z]
+    return 'X'
 
 
 def create_gaussian_view_style_viewer(
@@ -144,6 +157,132 @@ def load_structure_from_db(db_path: str, index: int = 0) -> Optional[Atoms]:
         return None
 
 
+def create_orbital_viewer(
+    cube_path: str,
+    width: int = 600,
+    height: int = 500,
+    iso_value: float = 0.02,
+    orbital_type: str = "HOMO",
+    background_color: str = "#1a1a2e",
+) -> str:
+    """
+    Create a 3D viewer for molecular orbital (cube file) visualization.
+    
+    Args:
+        cube_path: Path to the .cube file
+        width: Viewer width in pixels
+        height: Viewer height in pixels  
+        iso_value: Isosurface value for orbital visualization
+        orbital_type: Type of orbital ("HOMO" or "LUMO") for coloring
+        background_color: Background color
+        
+    Returns:
+        HTML string containing the interactive 3D orbital viewer
+    """
+    if not os.path.exists(cube_path):
+        return f"<p style='color: red;'>Cube 文件不存在: {cube_path}</p>"
+    
+    try:
+        # Read cube file content
+        with open(cube_path, 'r') as f:
+            cube_content = f.read()
+        
+        viewer = py3Dmol.view(width=width, height=height)
+        
+        # Add the volumetric data with isosurface
+        # Use different colors for HOMO and LUMO
+        if orbital_type.upper() == "HOMO":
+            pos_color = "#1E90FF"  # Dodger Blue
+            neg_color = "#FF6347"  # Tomato Red
+        else:  # LUMO
+            pos_color = "#32CD32"  # Lime Green  
+            neg_color = "#FFD700"  # Gold
+        
+        # Add positive lobe
+        viewer.addVolumetricData(cube_content, "cube", {
+            'isoval': iso_value,
+            'color': pos_color,
+            'opacity': 0.75,
+            'smoothness': 3
+        })
+        # Add negative lobe
+        viewer.addVolumetricData(cube_content, "cube", {
+            'isoval': -iso_value,
+            'color': neg_color,
+            'opacity': 0.75,
+            'smoothness': 3
+        })
+        
+        # Also show the molecular structure
+        viewer.addModel(cube_content, "cube")
+        viewer.setStyle({
+            'sphere': {'colorscheme': 'Jmol', 'scale': 0.2},
+            'stick': {'radius': 0.1, 'colorscheme': 'Jmol'}
+        })
+        
+        viewer.setBackgroundColor(background_color)
+        viewer.zoomTo()
+        
+        html = viewer._make_html()
+        
+        # Wrap with controls info
+        wrapper_html = f"""
+        <div style="border: 2px solid #4a4a6a; border-radius: 8px; padding: 10px; background: #0d0d1a;">
+            <div style="color: #aaa; font-size: 12px; margin-bottom: 5px; text-align: center;">
+                🖱️ 左键拖动旋转 | 滚轮缩放 | 右键平移
+            </div>
+            {html}
+            <div style="color: #888; font-size: 11px; margin-top: 5px; text-align: center;">
+                {orbital_type} 轨道 | 等值面: ±{iso_value} &nbsp;
+                <span style="color: {pos_color};">■</span> 正相位 &nbsp;
+                <span style="color: {neg_color};">■</span> 负相位
+            </div>
+        </div>
+        """
+        
+        return wrapper_html
+        
+    except Exception as e:
+        return f"<p style='color: red;'>加载轨道可视化失败: {e}</p>"
+
+
+def find_orbital_files(inference_dir: str) -> Dict[str, Optional[str]]:
+    """
+    Find HOMO and LUMO cube files in the inference results directory.
+    
+    Args:
+        inference_dir: Path to inference results directory
+        
+    Returns:
+        Dictionary with 'homo' and 'lumo' keys pointing to file paths
+    """
+    result: Dict[str, Optional[str]] = {'homo': None, 'lumo': None}
+    
+    if not os.path.exists(inference_dir):
+        return result
+    
+    # Search in various possible locations
+    search_patterns = [
+        os.path.join(inference_dir, "results", "*", "homo.cube"),
+        os.path.join(inference_dir, "results", "*", "lumo.cube"),
+        os.path.join(inference_dir, "*", "homo.cube"),
+        os.path.join(inference_dir, "*", "lumo.cube"),
+        os.path.join(inference_dir, "homo.cube"),
+        os.path.join(inference_dir, "lumo.cube"),
+    ]
+    
+    for pattern in search_patterns:
+        matches = glob.glob(pattern)
+        for match in matches:
+            basename = os.path.basename(match).lower()
+            if 'homo' in basename and result['homo'] is None:
+                result['homo'] = match
+            elif 'lumo' in basename and result['lumo'] is None:
+                result['lumo'] = match
+    
+    return result
+
+
 def create_structure_preview_html(db_path: str, max_structures: int = 3) -> str:
     """
     Create HTML preview for structures in a database.
@@ -188,6 +327,66 @@ def create_structure_preview_html(db_path: str, max_structures: int = 3) -> str:
             
     except Exception as e:
         return f"<p style='color: red;'>加载结构失败: {e}</p>"
+
+
+def create_analysis_visualization_html(
+    db_path: str,
+    inference_dir: str,
+    width: int = 600,
+    height: int = 450
+) -> Dict[str, Any]:
+    """
+    Create visualization HTML for structure, HOMO, and LUMO.
+    
+    Returns:
+        Dictionary with 'structure', 'homo', 'lumo' keys containing HTML strings
+        and 'xxx_available' boolean flags
+    """
+    result: Dict[str, Any] = {
+        'structure': None,
+        'homo': None,
+        'lumo': None,
+        'structure_available': False,
+        'homo_available': False,
+        'lumo_available': False
+    }
+    
+    # Structure visualization
+    if db_path and os.path.exists(db_path):
+        try:
+            atoms = load_structure_from_db(db_path)
+            if atoms:
+                result['structure'] = create_gaussian_view_style_viewer(
+                    atoms, width=width, height=height, style="sphere+stick"
+                )
+                result['structure_available'] = True
+        except Exception as e:
+            result['structure'] = f"<p style='color: orange;'>结构加载失败: {e}</p>"
+    
+    # Find and visualize orbitals
+    orbital_files = find_orbital_files(inference_dir)
+    
+    if orbital_files['homo']:
+        result['homo'] = create_orbital_viewer(
+            orbital_files['homo'], 
+            width=width, 
+            height=height,
+            iso_value=0.02,
+            orbital_type="HOMO"
+        )
+        result['homo_available'] = True
+    
+    if orbital_files['lumo']:
+        result['lumo'] = create_orbital_viewer(
+            orbital_files['lumo'],
+            width=width,
+            height=height, 
+            iso_value=0.02,
+            orbital_type="LUMO"
+        )
+        result['lumo_available'] = True
+    
+    return result
 
 
 def generate_high_quality_image(

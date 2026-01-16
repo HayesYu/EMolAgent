@@ -31,7 +31,14 @@ from langchain.agents.structured_output import ToolStrategy
 from langgraph.checkpoint.memory import InMemorySaver
 from langchain_google_genai import ChatGoogleGenerativeAI
 
-from mol_viewer import create_structure_preview_html, load_structure_from_db, create_gaussian_view_style_viewer
+from mol_viewer import (
+    create_structure_preview_html, 
+    load_structure_from_db, 
+    create_gaussian_view_style_viewer,
+    create_orbital_viewer,
+    find_orbital_files,
+    create_analysis_visualization_html
+)
 import streamlit.components.v1 as components
 
 
@@ -290,6 +297,7 @@ def tool_infer_pipeline(optimized_db_path: str, model_path: str | None = None) -
                 f"推理完成。\n"
                 f"CSV摘要路径: {csv_path}\n"
                 f"数据预览: {res_dict.get('data_preview')}\n"
+                f"[[ANALYSIS_VISUALIZATION:{optimized_db_path}|{infer_out}]]\n"
                 f"[[DOWNLOAD:{zip_path}]]"
             )
         return f"推理出错: {result_json_str}"
@@ -464,21 +472,91 @@ def normalize_chat_content(content: Any) -> str:
     return str(content)
 
 def render_message_with_download(role: str, content: Any, key_prefix: str):
-    """将 [[DOWNLOAD:...]] 和 [[STRUCTURE_PREVIEW:...]] 变成可交互组件"""
+    """将 [[DOWNLOAD:...]], [[STRUCTURE_PREVIEW:...]], [[ANALYSIS_VISUALIZATION:...]] 变成可交互组件"""
     text = normalize_chat_content(content)
 
     with st.chat_message(role):
-        # 处理结构预览标记
+        # 处理各种标记
         structure_match = re.search(r"\[\[STRUCTURE_PREVIEW:(.*?)\]\]", text)
+        analysis_match = re.search(r"\[\[ANALYSIS_VISUALIZATION:(.*?)\|(.*?)\]\]", text)
         download_match = re.search(r"\[\[DOWNLOAD:(.*?)\]\]", text)
         
         # 清理显示文本
         display_text = re.sub(r"\[\[STRUCTURE_PREVIEW:.*?\]\]", "", text)
+        display_text = re.sub(r"\[\[ANALYSIS_VISUALIZATION:.*?\]\]", "", display_text)
         display_text = re.sub(r"\[\[DOWNLOAD:.*?\]\]", "", display_text).strip()
         st.write(display_text)
 
-        # 显示 3D 结构预览
-        if structure_match:
+        # 处理完整分析可视化 (结构 + HOMO + LUMO)
+        if analysis_match:
+            db_path = analysis_match.group(1).strip()
+            infer_dir = analysis_match.group(2).strip()
+            
+            st.markdown("### 🔬 分析结果可视化")
+            
+            # 创建三个并排的标签页
+            tab_structure, tab_homo, tab_lumo = st.tabs(["🧬 团簇结构", "🔵 HOMO 轨道", "🟢 LUMO 轨道"])
+            
+            with tab_structure:
+                if os.path.exists(db_path):
+                    try:
+                        atoms = load_structure_from_db(db_path)
+                        if atoms:
+                            viewer_html = create_gaussian_view_style_viewer(
+                                atoms,
+                                width=650,
+                                height=500,
+                                style="sphere+stick",
+                                add_lighting=True
+                            )
+                            components.html(viewer_html, height=560, scrolling=False)
+                            st.caption(f"化学式: {atoms.get_chemical_formula()} | 原子数: {len(atoms)}")
+                        else:
+                            st.warning("无法加载结构预览")
+                    except Exception as e:
+                        st.error(f"结构预览失败: {e}")
+                else:
+                    st.warning(f"结构文件不存在: {db_path}")
+            
+            # 查找 HOMO/LUMO cube 文件
+            orbital_files = find_orbital_files(infer_dir)
+            
+            with tab_homo:
+                if orbital_files.get('homo') and os.path.exists(orbital_files['homo']):
+                    try:
+                        homo_html = create_orbital_viewer(
+                            orbital_files['homo'],
+                            width=650,
+                            height=500,
+                            iso_value=0.02,
+                            orbital_type="HOMO"
+                        )
+                        components.html(homo_html, height=560, scrolling=False)
+                        st.caption(f"文件: {os.path.basename(orbital_files['homo'])}")
+                    except Exception as e:
+                        st.error(f"HOMO 可视化失败: {e}")
+                else:
+                    st.info("HOMO 轨道文件未生成或不可用")
+            
+            with tab_lumo:
+                if orbital_files.get('lumo') and os.path.exists(orbital_files['lumo']):
+                    try:
+                        lumo_html = create_orbital_viewer(
+                            orbital_files['lumo'],
+                            width=650,
+                            height=500,
+                            iso_value=0.02,
+                            orbital_type="LUMO"
+                        )
+                        components.html(lumo_html, height=560, scrolling=False)
+                        st.caption(f"文件: {os.path.basename(orbital_files['lumo'])}")
+                    except Exception as e:
+                        st.error(f"LUMO 可视化失败: {e}")
+                else:
+                    st.info("LUMO 轨道文件未生成或不可用")
+
+        # 显示单独的 3D 结构预览 (仅生成结构时)
+        elif structure_match:
             db_path = structure_match.group(1).strip()
             if os.path.exists(db_path):
                 st.markdown("### 📊 结构预览")
