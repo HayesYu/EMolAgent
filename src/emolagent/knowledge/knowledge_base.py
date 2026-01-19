@@ -1,6 +1,7 @@
 """
 知识库管理模块 - 基于 ChromaDB + Google Embedding 的 RAG 实现
-支持 PDF、Markdown、PPTX 文献的索引与检索
+
+支持 PDF、Markdown、PPTX 文献的索引与检索。
 """
 
 import re
@@ -29,36 +30,39 @@ from langchain_community.document_loaders import (
 )
 from langchain_chroma import Chroma
 
+from emolagent.utils.paths import get_data_path
 
 # ==========================================
 # 常量定义
 # ==========================================
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_CHROMA_DB_PATH = os.path.join(BASE_DIR, "data", "chroma_db")
+DEFAULT_CHROMA_DB_PATH = get_data_path("chroma_db")
 CHROMA_DB_PATH = os.getenv("EMOL_CHROMA_DB_PATH", DEFAULT_CHROMA_DB_PATH)
 LITERATURE_PATH = "/home/hayes/projects/ai4mol"
 INDEX_STATE_FILE = os.path.join(CHROMA_DB_PATH, "index_state.json")
 
 COLLECTION_NAME = "ai4mol_literature"
 
+
 def _clean_text(text: str | None) -> str:
+    """清理文本，移除无效字符。"""
     if not text:
         return ""
-    # 去掉常见的 NUL 字符
     text = text.replace("\x00", "")
-    # 丢弃 surrogate 等非法 UTF-8 字符
     text = text.encode("utf-8", "ignore").decode("utf-8", "ignore")
     return text.strip()
 
+
 def _ensure_writable_dir(dir_path: str):
+    """确保目录可写。"""
     os.makedirs(dir_path, exist_ok=True)
     test_path = os.path.join(dir_path, ".write_test")
     with open(test_path, "w", encoding="utf-8") as f:
         f.write("ok")
     os.remove(test_path)
 
+
 def get_embeddings(api_key: str) -> GoogleGenerativeAIEmbeddings:
-    """获取 Google Embedding 模型"""
+    """获取 Google Embedding 模型。"""
     return GoogleGenerativeAIEmbeddings(
         model="models/text-embedding-004",
         google_api_key=api_key,
@@ -67,7 +71,7 @@ def get_embeddings(api_key: str) -> GoogleGenerativeAIEmbeddings:
 
 
 def get_query_embeddings(api_key: str) -> GoogleGenerativeAIEmbeddings:
-    """获取用于查询的 Embedding 模型"""
+    """获取用于查询的 Embedding 模型。"""
     return GoogleGenerativeAIEmbeddings(
         model="models/text-embedding-004",
         google_api_key=api_key,
@@ -76,9 +80,12 @@ def get_query_embeddings(api_key: str) -> GoogleGenerativeAIEmbeddings:
 
 
 def reset_chroma_client():
+    """重置 Chroma 客户端（占位函数）。"""
     return
 
+
 def get_chroma_client() -> chromadb.PersistentClient:
+    """获取 Chroma 持久化客户端。"""
     os.makedirs(CHROMA_DB_PATH, exist_ok=True)
     _ensure_writable_dir(CHROMA_DB_PATH)
     return chromadb.PersistentClient(
@@ -91,7 +98,7 @@ def get_chroma_client() -> chromadb.PersistentClient:
 
 
 def get_vectorstore(api_key: str) -> Chroma:
-    """获取或创建 Chroma 向量数据库"""
+    """获取或创建 Chroma 向量数据库。"""
     embeddings = get_embeddings(api_key)
     client = get_chroma_client()
     
@@ -104,7 +111,7 @@ def get_vectorstore(api_key: str) -> Chroma:
 
 
 def compute_file_hash(file_path: str) -> str:
-    """计算文件的 MD5 哈希值，用于增量索引"""
+    """计算文件的 MD5 哈希值。"""
     hasher = hashlib.md5()
     with open(file_path, 'rb') as f:
         for chunk in iter(lambda: f.read(8192), b''):
@@ -113,7 +120,7 @@ def compute_file_hash(file_path: str) -> str:
 
 
 def load_index_state() -> dict:
-    """加载已索引文件的状态"""
+    """加载已索引文件的状态。"""
     if os.path.exists(INDEX_STATE_FILE):
         try:
             with open(INDEX_STATE_FILE, 'r') as f:
@@ -124,17 +131,14 @@ def load_index_state() -> dict:
 
 
 def save_index_state(state: dict):
-    """保存索引状态"""
+    """保存索引状态。"""
     os.makedirs(os.path.dirname(INDEX_STATE_FILE), exist_ok=True)
     with open(INDEX_STATE_FILE, 'w') as f:
         json.dump(state, f, indent=2)
 
 
 def collect_documents(literature_path: str) -> List[str]:
-    """
-    递归收集所有支持的文档路径
-    支持: .pdf, .md, .pptx
-    """
+    """递归收集所有支持的文档路径。"""
     supported_extensions = {'.pdf', '.md', '.pptx'}
     documents = []
     
@@ -143,7 +147,6 @@ def collect_documents(literature_path: str) -> List[str]:
         return documents
     
     for root, dirs, files in os.walk(literature_path):
-        # 跳过隐藏目录
         dirs[:] = [d for d in dirs if not d.startswith('.')]
         
         for file in files:
@@ -155,7 +158,7 @@ def collect_documents(literature_path: str) -> List[str]:
 
 
 def load_document(file_path: str) -> List:
-    """根据文件类型加载文档"""
+    """根据文件类型加载文档。"""
     ext = os.path.splitext(file_path)[1].lower()
     
     try:
@@ -177,11 +180,9 @@ def load_document(file_path: str) -> List:
             cleaned_docs.append(doc)
         docs = cleaned_docs
         
-        # 添加元数据
         for doc in docs:
             doc.metadata['source'] = file_path
             doc.metadata['filename'] = os.path.basename(file_path)
-            # 提取相对路径作为分类
             rel_path = os.path.relpath(file_path, LITERATURE_PATH)
             doc.metadata['category'] = os.path.dirname(rel_path)
         
@@ -197,9 +198,7 @@ def build_index(
     force_rebuild: bool = False,
     progress_callback=None
 ) -> dict:
-    """
-    构建或增量更新知识库索引
-    """
+    """构建或增量更新知识库索引。"""
     
     stats = {
         "total_files": 0,
@@ -209,14 +208,12 @@ def build_index(
         "total_chunks": 0
     }
     
-    # 收集所有文档
     all_files = collect_documents(literature_path)
     stats["total_files"] = len(all_files)
     
     if not all_files:
         return stats
     
-    # 如果强制重建，先彻底清理
     if force_rebuild:
         client = get_chroma_client()
         client.reset()
@@ -228,18 +225,14 @@ def build_index(
     else:
         index_state = load_index_state()
     
-    # 获取向量数据库
     vectorstore = get_vectorstore(api_key)
     
-    # 文本分割器
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=1000,
         chunk_overlap=200,
         separators=["\n\n", "\n", "。", ".", " ", ""],
     )
-    # ----------------------------
-    # 进度统计（每 N 个文件打印一次）
-    # ----------------------------
+    
     log_every_n = int(os.getenv("EMOL_INDEX_LOG_EVERY_N", "20"))
     start_ts = time.time()
     last_log_ts = start_ts
@@ -258,7 +251,7 @@ def build_index(
         if m > 0:
             return f"{m}m{s:02d}s"
         return f"{s}s"
-    # 处理每个文件
+
     for idx, file_path in enumerate(all_files):
         if progress_callback:
             progress_callback(idx + 1, len(all_files), os.path.basename(file_path))
@@ -266,18 +259,15 @@ def build_index(
         try:
             file_hash = compute_file_hash(file_path)
             
-            # 检查是否需要更新
             if file_path in index_state and index_state[file_path] == file_hash:
                 stats["skipped"] += 1
                 continue
             
-            # 加载文档
             docs = load_document(file_path)
             if not docs:
                 stats["failed"] += 1
                 continue
             
-            # 分割文档
             chunks = text_splitter.split_documents(docs)
             cleaned_chunks = []
             for c in chunks:
@@ -292,7 +282,6 @@ def build_index(
                 continue
             
             if chunks:
-                # 如果是更新，先删除旧的
                 if file_path in index_state:
                     try:
                         collection = vectorstore._collection
@@ -300,15 +289,12 @@ def build_index(
                     except Exception:
                         pass
                 
-                # 添加新向量
                 vectorstore.add_documents(chunks)
                 stats["total_chunks"] += len(chunks)
                 stats["new_indexed"] += 1
                 
-                # 更新索引状态
                 index_state[file_path] = file_hash
                 
-                # 每处理10个文件保存一次状态
                 if stats["new_indexed"] % 10 == 0:
                     save_index_state(index_state)
         
@@ -321,18 +307,16 @@ def build_index(
             if log_every_n > 0 and (processed % log_every_n == 0 or processed == len(all_files)):
                 now = time.time()
                 elapsed = max(now - start_ts, 1e-6)
-                interval = max(now - last_log_ts, 1e-6)
 
                 files_per_s = processed / elapsed
                 chunks_total = stats["total_chunks"]
                 chunks_per_s = chunks_total / elapsed
 
-                # 用“平均每文件耗时”估 ETA
                 remaining_files = len(all_files) - processed
                 avg_sec_per_file = elapsed / processed
                 eta_sec = remaining_files * avg_sec_per_file
 
-                # 区间速率（看最近 N 个文件的速度）
+                interval = max(now - last_log_ts, 1e-6)
                 interval_files = processed - last_log_processed
                 interval_chunks = chunks_total - last_log_chunks
                 interval_files_per_s = interval_files / interval
@@ -352,7 +336,6 @@ def build_index(
                 last_log_processed = processed
                 last_log_chunks = chunks_total
     
-    # 保存索引状态
     save_index_state(index_state)
     
     return stats
@@ -364,7 +347,7 @@ def search_knowledge(
     top_k: int = 5,
     filter_category: Optional[str] = None
 ) -> List[dict]:
-    """在知识库中搜索相关内容"""
+    """在知识库中搜索相关内容。"""
     embeddings = get_query_embeddings(api_key)
     client = get_chroma_client()
     
@@ -374,17 +357,14 @@ def search_knowledge(
         client=client,
     )
     
-    # 构建过滤条件
     search_kwargs = {"k": top_k}
     if filter_category:
         search_kwargs["filter"] = {"category": filter_category}
     
-    # 执行相似度搜索
     results = vectorstore.similarity_search_with_relevance_scores(
         query, **search_kwargs
     )
     
-    # 格式化结果
     formatted_results = []
     for doc, score in results:
         formatted_results.append({
@@ -399,9 +379,8 @@ def search_knowledge(
 
 
 def get_index_stats(api_key: str) -> dict:
-    """获取知识库统计信息"""
+    """获取知识库统计信息。"""
     try:
-        # 先检查目录是否存在
         if not os.path.exists(CHROMA_DB_PATH):
             return {
                 "total_documents": 0,

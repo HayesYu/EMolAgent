@@ -1,3 +1,9 @@
+"""
+团簇构建工厂模块
+
+负责构建各类锂离子溶剂化结构 (SSIP/CIP/AGG)。
+"""
+
 import os
 import re
 import argparse
@@ -11,11 +17,11 @@ from ase.db import connect
 from ase.io import write
 from tqdm import tqdm
 
+from emolagent.utils.logger import logger
+from emolagent.core import uma_optimizer
+
 # Import the build_cluster function
 from emoles.build.cluster import build_cluster
-
-# Import UMA optimizer
-import uma_entry
 
 # ==========================================
 # Default Constants
@@ -73,49 +79,34 @@ def optimize_monomers(entries: List[Dict], prefix: str, root_workspace: str, dev
     Takes a list of raw entries (from SMILES), creates a temp DB,
     optimizes them via UMA, and returns the optimized entries.
     """
-    print(f"\n[Pre-Optimization] detected SMILES input for {prefix}. Optimizing monomers with UMA...")
+    logger.info(f"\n[Pre-Optimization] detected SMILES input for {prefix}. Optimizing monomers with UMA...")
 
-    # 1. Create a temporary workspace for monomer optimization
     temp_workspace = os.path.join(root_workspace, f"temp_opt_{prefix.lower()}")
     os.makedirs(temp_workspace, exist_ok=True)
 
     input_db_path = os.path.join(temp_workspace, "raw_monomers.db")
 
-    # 2. Write raw structures to DB
     if os.path.exists(input_db_path):
         os.remove(input_db_path)
 
     with connect(input_db_path) as db:
         for ent in entries:
-            # We must convert SMILES string to Atoms object here if it isn't one already
-            # uma_entry has a helper for this, but we need to preserve names.
-            # We rely on uma_entry's smiles_to_atoms logic or do it here.
-            # To be safe and preserve names, we use uma_entry's internal utility if available,
-            # otherwise we rely on the fact that parse_smiles_input returned SMILES strings
-            # and we need to embed them now.
-
             atoms_obj = ent['atoms']
             if isinstance(atoms_obj, str):
-                # It's a SMILES string. Use UMA's utility to embed it to 3D
                 try:
-                    atoms_obj = uma_entry.smiles_to_atoms(atoms_obj)
+                    atoms_obj = uma_optimizer.smiles_to_atoms(atoms_obj)
                 except Exception as e:
-                    print(f"  Error embedding {ent['name']}: {e}")
+                    logger.error(f"  Error embedding {ent['name']}: {e}")
                     continue
 
-            # Default charge guessing for monomers (Solvent=0, Anion=-1 usually)
-            # This is rough, UMA optimization will fix geometry, but charge property
-            # needs to be consistent.
             if prefix.lower() == "anion":
-                atoms_obj.info['n_anion'] = 1  # Signal to UMA this contributes to negative charge
+                atoms_obj.info['n_anion'] = 1
             else:
                 atoms_obj.info['n_anion'] = 0
 
             db.write(atoms_obj, name=ent['name'])
 
-    # 3. Call UMA Entry
-    # We use a separate workspace to avoid conflicts
-    optimized_db_path = uma_entry.entry(
+    optimized_db_path = uma_optimizer.entry(
         input_db=input_db_path,
         workspace=temp_workspace,
         device=device,
@@ -123,10 +114,9 @@ def optimize_monomers(entries: List[Dict], prefix: str, root_workspace: str, dev
         show_progress=True
     )
 
-    # 4. Load the optimized results
     optimized_entries = load_db_entries(optimized_db_path, show_progress=False)
 
-    print(f"[Pre-Optimization] Done. Loaded {len(optimized_entries)} optimized {prefix} monomers.\n")
+    logger.info(f"[Pre-Optimization] Done. Loaded {len(optimized_entries)} optimized {prefix} monomers.\n")
     return optimized_entries
 
 
@@ -148,7 +138,7 @@ def parse_smiles_input(smiles_list: List[str], default_prefix: str) -> List[Dict
         entries.append({
             'id': i,
             'name': name,
-            'atoms': smiles,  # Keep as string initially
+            'atoms': smiles,
             'kvp': {},
             'data': {}
         })
@@ -164,30 +154,25 @@ def normalize_input_data(source: Union[str, List[str], List[Dict], None],
     if source is None:
         return []
 
-    # Case: Already loaded list of dicts with Atoms objects
     if isinstance(source, list) and len(source) > 0 and isinstance(source[0], dict) and isinstance(
             source[0].get('atoms'), Atoms):
         return source
 
-    # Normalization: 将单个字符串输入转换为列表，统一处理
     if isinstance(source, str):
         source = [source]
 
-    # Case: List of strings (SMILES or File Paths)
     if isinstance(source, list) and all(isinstance(x, str) for x in source):
         all_entries = []
         smiles_batch = []
 
         for item in source:
-            # 判断是否为数据库文件路径
             if item.endswith('.db') or item.endswith('.json'):
-                print(f"Loading {prefix} from DB: {item}")
+                logger.info(f"Loading {prefix} from DB: {item}")
                 try:
                     all_entries.extend(load_db_entries(item, show_progress))
                 except Exception as e:
-                    print(f"Error loading {item}: {e}")
+                    logger.error(f"Error loading {item}: {e}")
             else:
-                # 否则视为 SMILES 字符串
                 smiles_batch.append(item)
         if smiles_batch:
             raw_entries = parse_smiles_input(smiles_batch, prefix)
@@ -210,7 +195,6 @@ def plan_combinations(
     plan = {'SSIP': [], 'CIP': [], 'AGG': []}
     spin = 1
 
-    # SSIP: Charge = +1 (Li+)
     if "SSIP" in include_categories:
         for s in solvents:
             for n_solv in choices_solv:
@@ -225,7 +209,6 @@ def plan_combinations(
                         'spin': spin,
                     })
 
-    # CIP: Charge = 0 (Li+ + Anion-)
     if "CIP" in include_categories and anions:
         for s in solvents:
             for a in anions:
@@ -242,7 +225,6 @@ def plan_combinations(
                             'spin': spin,
                         })
 
-    # AGG: Charge = 1 - n_anion
     if "AGG" in include_categories and anions:
         for s in solvents:
             for a in anions:
@@ -305,7 +287,8 @@ def build_from_plan(
 
         for cat in ['SSIP', 'CIP', 'AGG']:
             items = plan.get(cat, [])
-            if not items: continue
+            if not items:
+                continue
 
             items_iter = tqdm(items, desc=f"Building {cat}", unit="item", leave=False) if show_progress else items
 
@@ -328,7 +311,8 @@ def build_from_plan(
                     ligand_info.append((anion_obj, it['n_anion']))
 
                 current_kwargs = cluster_kwargs.copy()
-                if show_progress: current_kwargs['verbose'] = False
+                if show_progress:
+                    current_kwargs['verbose'] = False
 
                 try:
                     cluster = build_cluster(
@@ -337,51 +321,29 @@ def build_from_plan(
                         **current_kwargs
                     )
 
-                    # ==========================================
-                    # CRITICAL FIX: Clean and set charges properly
-                    # ==========================================
-                    
-                    # 1. Remove any existing charge-related properties that might interfere
                     if 'charge' in cluster.info:
                         del cluster.info['charge']
                     if 'initial_charges' in cluster.arrays:
                         del cluster.arrays['initial_charges']
-                    # ASE stores per-atom charges in arrays['initial_charges'] sometimes
                     
-                    # 2. Set the correct system-level properties
-                    cluster.info['charge'] = int(it['charge'])  # Force integer type
+                    cluster.info['charge'] = int(it['charge'])
                     cluster.info['spin'] = int(it['spin'])
                     cluster.info['n_anion'] = int(it['n_anion'])
-
-                    # 3. DO NOT set atom.charge - it causes issues with ASE DB
-                    # The Li+ formal charge is implicit in the system charge
-
-                    # ==========================================
-                    # Save Files
-                    # ==========================================
 
                     fname = compose_filename(ion, solvent_name, anion_name, it['n_solv'], it['n_anion'], cat)
                     comment = f"cat={cat} chg={it['charge']} spin={it['spin']} ion={ion} ns={it['n_solv']} na={it['n_anion']}"
 
-                    # Write XYZ
                     write(str(out_dirs[cat]['xyz'] / fname), cluster, comment=comment)
                     write(str(out_dirs['ALL']['xyz'] / fname), cluster, comment=comment)
 
-                    # ==========================================
-                    # DB Writing Logic
-                    # ==========================================
                     kvp = {
                         'category': cat, 'ion': ion, 'solvent_name': solvent_name, 'anion_name': anion_name,
                         'n_solv': int(it['n_solv']), 'n_anion': int(it['n_anion']), 
-                        'charge': int(it['charge']),  # Force integer
+                        'charge': int(it['charge']),
                         'spin': int(it['spin']), 
                         'xyz_file': fname, 
                         'n_atoms_cluster': len(cluster)
                     }
-
-                    # DEBUG
-                    # print(f"[DEBUG] Pre-write cluster.info['charge'] = {cluster.info.get('charge')}")
-                    # print(f"[DEBUG] Pre-write kvp['charge'] = {kvp['charge']}")
 
                     db_handles[cat].write(cluster, data=kvp, **kvp)
                     db_handles['ALL'].write(cluster, data=kvp, **kvp)
@@ -389,13 +351,12 @@ def build_from_plan(
                     stats['built'] += 1
                     stats[cat] += 1
                     if verbose and not show_progress:
-                        print(f"  ✓ {cat}: {fname} (Charge: {it['charge']})")
+                        logger.info(f"  ✓ {cat}: {fname} (Charge: {it['charge']})")
 
                 except Exception as e:
                     stats['failed'] += 1
                     if verbose:
-                        print(f"  ✗ Failed: {solvent_name} + {anion_name}: {e}")
-                    # traceback.print_exc()
+                        logger.error(f"  ✗ Failed: {solvent_name} + {anion_name}: {e}")
 
             if show_progress:
                 main_pbar.update(1)
@@ -422,15 +383,15 @@ def entry(
         show_progress: bool = True,
         **cluster_kwargs
 ) -> Dict[str, int]:
-    # 1. Prepare/Optimize Inputs
-    # If inputs are SMILES, normalize_input_data will call UMA to optimize them first.
+    """
+    团簇构建主入口函数。
+    """
     solvents_data = normalize_input_data(solvents, "Solvent", show_progress, out_dir, device)
     anions_data = normalize_input_data(anions, "Anion", show_progress, out_dir, device)
 
     if not solvents_data:
         raise ValueError("Solvents data cannot be empty.")
 
-    # 2. Plan
     plan = plan_combinations(
         solvents=solvents_data,
         anions=anions_data,
@@ -443,12 +404,11 @@ def entry(
     ssip_n = len(plan['SSIP'])
     cip_n = len(plan['CIP'])
     agg_n = len(plan['AGG'])
-    print(f"\nPlan: SSIP={ssip_n}, CIP={cip_n}, AGG={agg_n} => Total: {ssip_n + cip_n + agg_n}")
+    logger.info(f"\nPlan: SSIP={ssip_n}, CIP={cip_n}, AGG={agg_n} => Total: {ssip_n + cip_n + agg_n}")
 
     if plan_only:
         return {}
 
-    # 3. Build Clusters
     out_path = Path(out_dir)
     out_dirs = ensure_dirs(out_path)
 
@@ -471,30 +431,29 @@ def entry(
         show_progress=show_progress
     )
 
-    print(f"Build phase done. Success: {stats['built']}/{stats['attempted']}.")
+    logger.info(f"Build phase done. Success: {stats['built']}/{stats['attempted']}.")
 
-    # 4. Post-Optimization (Optional but Default)
     if optimize_result and stats['built'] > 0:
         raw_db_path = str(out_dirs['ALL']['db'])
         final_opt_workspace = out_path / "final_optimized"
 
-        print("\n" + "=" * 50)
-        print(f"Starting UMA Post-Optimization for {stats['built']} clusters...")
-        print("=" * 50)
-
-        optimized_db_path = uma_entry.entry(
+        logger.info("\n" + "=" * 50)
+        logger.info(f"Starting UMA Post-Optimization for {stats['built']} clusters...")
+        logger.info("=" * 50)
+        optimized_db_path = uma_optimizer.entry(
             input_db=raw_db_path,
             workspace=str(final_opt_workspace),
             device=device,
             verbose=verbose,
             show_progress=show_progress
         )
-        print(f"\nOptimization Complete. Final DB: {optimized_db_path}")
+        logger.info(f"\nOptimization Complete. Final DB: {optimized_db_path}")
 
     return stats
 
 
 def main():
+    """命令行入口。"""
     parser = argparse.ArgumentParser(description="Build Li+ clusters (Entry Wrapper).")
 
     parser.add_argument('--solvents', nargs='*', help='SMILES list or DB path. Default: DME', default=None)
@@ -507,7 +466,6 @@ def main():
     parser.add_argument('--agg-anion-counts', default='2', help='AGG anion counts')
     parser.add_argument('--categories', default='SSIP,CIP,AGG', help='Categories to build')
 
-    # Optimization flags
     parser.add_argument('--no-opt', action='store_false', dest='optimize_result', help='Skip post-build optimization')
     parser.add_argument('--device', default='cuda', help='Device for UMA (cuda/cpu)')
 
