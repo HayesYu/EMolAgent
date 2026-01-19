@@ -1,3 +1,9 @@
+"""
+EMolAgent Streamlit 主应用
+
+提供基于 Web 的用户界面，集成 LangChain Agent 进行分子计算和知识问答。
+"""
+
 import os
 import json
 import time
@@ -10,17 +16,18 @@ from typing import Any
 import streamlit as st
 import extra_streamlit_components as stx
 
-from logger_config import logger
+from emolagent.utils.logger import logger
+from emolagent.utils.paths import get_resource_path, get_project_root
 
-import database as db
-from tools_lib_infer import (
+from emolagent.database import db
+from emolagent.core.tools import (
     search_molecule_in_db,
     build_and_optimize_cluster,
     run_dm_infer_pipeline,
     compress_directory,
 )
 
-from knowledge_base import (
+from emolagent.knowledge import (
     search_knowledge,
     build_index,
     get_index_stats,
@@ -33,7 +40,7 @@ from langchain.agents.structured_output import ToolStrategy
 from langgraph.checkpoint.memory import InMemorySaver
 from langchain_google_genai import ChatGoogleGenerativeAI
 
-from mol_viewer import (
+from emolagent.visualization import (
     create_structure_preview_html, 
     load_structure_from_db, 
     create_gaussian_view_style_viewer,
@@ -44,7 +51,7 @@ from mol_viewer import (
 import streamlit.components.v1 as components
 
 
-DEFAULT_MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resources/models/nnenv.ep154.pth")
+DEFAULT_MODEL_PATH = get_resource_path("models", "nnenv.ep154.pth")
 
 ADMIN_USERS = ["hayes"]
 
@@ -134,7 +141,7 @@ st.set_page_config(page_title="EMolAgent", page_icon="🧪", layout="wide")
 
 @st.cache_resource(ttl=86400)
 def schedule_cleanup():
-    """Scheduled cleanup task."""
+    """定时清理任务。"""
     db.cleanup_old_data(days=30)
     return True
 
@@ -144,7 +151,7 @@ def get_manager():
 
 
 def validate_path_exists(path: str, description: str):
-    """检查路径是否存在，不存在则终止"""
+    """检查路径是否存在，不存在则终止。"""
     if not path or not os.path.exists(path):
         st.error(f"⛔️ **错误：终止执行**\n\n找不到{description}：`{path}`\n\n请检查文件路径是否正确。")
         st.stop()
@@ -152,23 +159,24 @@ def validate_path_exists(path: str, description: str):
 
 
 def get_user_workspace():
-    """根据 session_state 中的用户信息和当前会话ID生成路径"""
+    """根据 session_state 中的用户信息和当前会话ID生成路径。"""
     if "user" in st.session_state and st.session_state["user"]:
         username = st.session_state["user"]["username"]
         safe_username = "".join([c for c in username if c.isalnum() or c in ("-", "_")])
         chat_id = st.session_state.get("current_chat_id", "temp")
-        workspace = os.path.join("users", safe_username, "output", str(chat_id))
+        workspace = os.path.join(get_project_root(), "users", safe_username, "output", str(chat_id))
     else:
-        workspace = os.path.join("users", "guest", "output", "temp")
+        workspace = os.path.join(get_project_root(), "users", "guest", "output", "temp")
 
     if not os.path.exists(workspace):
         os.makedirs(workspace, exist_ok=True)
     return workspace
 
+
 def get_user_workspace_from_ids(username: str | None, chat_id: str | None):
     safe_username = "".join([c for c in (username or "guest") if c.isalnum() or c in ("-", "_")])
     safe_chat_id = str(chat_id or "temp")
-    workspace = os.path.join("users", safe_username, "output", safe_chat_id)
+    workspace = os.path.join(get_project_root(), "users", safe_username, "output", safe_chat_id)
     os.makedirs(workspace, exist_ok=True)
     return workspace
 
@@ -179,7 +187,7 @@ def get_user_workspace_from_ids(username: str | None, chat_id: str | None):
 
 @dataclass
 class Context:
-    """Custom runtime context schema (可扩展：例如把 user_id 带进 tool runtime)."""
+    """自定义运行时上下文。"""
     user_id: str | None = None
     username: str | None = None
     chat_id: str | None = None
@@ -194,7 +202,7 @@ class Context:
     ),
 )
 def tool_search_db(query_name: str, mol_type: str, runtime: ToolRuntime[Context]) -> str:
-    """Search molecule in local DB (uses runtime.context for user workspace)."""
+    """在本地数据库中搜索分子。"""
     user_ws = get_user_workspace_from_ids(runtime.context.username, runtime.context.chat_id)
     search_dir = os.path.join(user_ws, "search_cache")
     return search_molecule_in_db(query_name, mol_type, search_dir)
@@ -209,7 +217,7 @@ def tool_search_db(query_name: str, mol_type: str, runtime: ToolRuntime[Context]
     ),
 )
 def tool_build_optimize(ion_name: str, solvents_json: str, anions_json: str, runtime: ToolRuntime[Context]) -> str:
-    """Build+optimize cluster; outputs under the user's workspace."""
+    """构建并优化团簇。"""
     try:
         solvents = json.loads(solvents_json) if solvents_json else []
         anions = json.loads(anions_json) if anions_json else []
@@ -221,6 +229,7 @@ def tool_build_optimize(ion_name: str, solvents_json: str, anions_json: str, run
     task_dir = os.path.join(user_ws, f"task_{task_id}")
     return build_and_optimize_cluster(ion_name, solvents, anions, task_dir)
 
+
 @tool(
     "Build_Structure_Only",
     description=(
@@ -231,7 +240,7 @@ def tool_build_optimize(ion_name: str, solvents_json: str, anions_json: str, run
     ),
 )
 def tool_build_structure_only(ion_name: str, solvents_json: str, anions_json: str, runtime: ToolRuntime[Context]) -> str:
-    """Build+optimize cluster without inference; returns structure path + visualization marker."""
+    """仅构建结构，不进行电子结构分析。"""
     try:
         solvents = json.loads(solvents_json) if solvents_json else []
         anions = json.loads(anions_json) if anions_json else []
@@ -248,7 +257,6 @@ def tool_build_structure_only(ion_name: str, solvents_json: str, anions_json: st
         res_dict = json.loads(result)
         if res_dict.get("success"):
             optimized_db = res_dict.get("optimized_db")
-            # Store the path in session for later reference
             return json.dumps({
                 "success": True,
                 "optimized_db": optimized_db,
@@ -260,6 +268,7 @@ def tool_build_structure_only(ion_name: str, solvents_json: str, anions_json: st
     except:
         return result
 
+
 @tool(
     "Run_Inference_Pipeline",
     description=(
@@ -269,7 +278,7 @@ def tool_build_structure_only(ion_name: str, solvents_json: str, anions_json: st
     ),
 )
 def tool_infer_pipeline(optimized_db_path: str, model_path: str | None = None) -> str:
-    """Run inference; returns human-readable result + download marker."""
+    """运行电子结构推断。"""
     if model_path in ["None", "", None]:
         model_path = DEFAULT_MODEL_PATH
 
@@ -308,6 +317,7 @@ def tool_infer_pipeline(optimized_db_path: str, model_path: str | None = None) -
     except Exception as e:
         return f"Error processing inference results: {e}"
 
+
 @tool(
     "Search_Knowledge_Base",
     description=(
@@ -319,7 +329,7 @@ def tool_infer_pipeline(optimized_db_path: str, model_path: str | None = None) -
     ),
 )
 def tool_search_knowledge(query: str, top_k: int = 5) -> str:
-    """Search the knowledge base for relevant literature content."""
+    """搜索知识库。"""
     api_key = os.getenv("GOOGLE_API_KEY", "")
     if not api_key:
         return "Error: Google API Key not configured."
@@ -330,7 +340,6 @@ def tool_search_knowledge(query: str, top_k: int = 5) -> str:
         if not results:
             return "未找到相关文献内容。请尝试换一种表达方式或更具体的关键词。"
         
-        # 格式化输出
         output_parts = [f"找到 {len(results)} 条相关文献内容：\n"]
         
         for i, r in enumerate(results, 1):
@@ -345,6 +354,7 @@ def tool_search_knowledge(query: str, top_k: int = 5) -> str:
     except Exception as e:
         return f"知识库搜索出错: {str(e)}"
 
+
 TOOLS = [tool_search_db, tool_build_structure_only, tool_build_optimize, tool_infer_pipeline, tool_search_knowledge]
 
 
@@ -354,22 +364,17 @@ TOOLS = [tool_search_db, tool_build_structure_only, tool_build_optimize, tool_in
 
 @dataclass
 class ResponseFormat:
-    """Structured response schema (可选).
-
-    当前 UI 直接展示纯文本 output，并用 [[DOWNLOAD:...]] 做下载。
-    因此这里不强制 structured output，只是给未来扩展留接口。
-    """
+    """结构化响应模式。"""
     output: str
 
 
 @st.cache_resource(show_spinner=False)
 def get_checkpointer() -> InMemorySaver:
-    # 单机内存 checkpoint：适合 Streamlit demo / 单机部署
     return InMemorySaver()
 
 
 def build_agent(model_name: str, temperature: float, api_key: str):
-    """构建并返回 LangChain agent（每次参数变化时重建）"""
+    """构建并返回 LangChain agent。"""
     model = ChatGoogleGenerativeAI(
         model=model_name,
         google_api_key=api_key,
@@ -385,8 +390,6 @@ def build_agent(model_name: str, temperature: float, api_key: str):
         tools=TOOLS,
         system_prompt=CUSTOM_SYSTEM_PREFIX,
         context_schema=Context,
-        # 如果后面想让 agent 输出结构化结果，可以启用这一行：
-        # response_format=ToolStrategy(ResponseFormat),
         checkpointer=checkpointer,
     )
     return agent
@@ -397,7 +400,7 @@ def build_agent(model_name: str, temperature: float, api_key: str):
 # ==============================================================================
 
 def login_ui(cookie_manager):
-    """处理登录和注册的 UI 渲染"""
+    """处理登录和注册的 UI 渲染。"""
     st.title("🧪 EMolAgent - 请先登录")
     tab1, tab2 = st.tabs(["登录", "注册"])
 
@@ -438,6 +441,7 @@ def login_ui(cookie_manager):
                 else:
                     st.error("请输入用户名和密码")
 
+
 def normalize_chat_content(content: Any) -> str:
     if content is None:
         return ""
@@ -449,7 +453,6 @@ def normalize_chat_content(content: Any) -> str:
         except Exception:
             return str(content)
 
-    # Gemini/LangChain 有时是 list[dict] 形式的多段内容
     if isinstance(content, list):
         parts: list[str] = []
         for item in content:
@@ -475,30 +478,27 @@ def normalize_chat_content(content: Any) -> str:
 
     return str(content)
 
+
 def render_message_with_download(role: str, content: Any, key_prefix: str):
-    """将 [[DOWNLOAD:...]], [[STRUCTURE_PREVIEW:...]], [[ANALYSIS_VISUALIZATION:...]] 变成可交互组件"""
+    """将特殊标记渲染为可交互组件。"""
     text = normalize_chat_content(content)
 
     with st.chat_message(role):
-        # 处理各种标记
         structure_match = re.search(r"\[\[STRUCTURE_PREVIEW:(.*?)\]\]", text)
         analysis_match = re.search(r"\[\[ANALYSIS_VISUALIZATION:(.*?)\|(.*?)\]\]", text)
         download_match = re.search(r"\[\[DOWNLOAD:(.*?)\]\]", text)
         
-        # 清理显示文本
         display_text = re.sub(r"\[\[STRUCTURE_PREVIEW:.*?\]\]", "", text)
         display_text = re.sub(r"\[\[ANALYSIS_VISUALIZATION:.*?\]\]", "", display_text)
         display_text = re.sub(r"\[\[DOWNLOAD:.*?\]\]", "", display_text).strip()
         st.write(display_text)
 
-        # 处理完整分析可视化 (结构 + HOMO + LUMO)
         if analysis_match:
             db_path = analysis_match.group(1).strip()
             infer_dir = analysis_match.group(2).strip()
             
             st.markdown("### 🔬 分析结果可视化")
             
-            # 创建三个并排的标签页
             tab_structure, tab_homo, tab_lumo = st.tabs(["🧬 团簇结构", "🔵 HOMO 轨道", "🟢 LUMO 轨道"])
             
             with tab_structure:
@@ -522,13 +522,11 @@ def render_message_with_download(role: str, content: Any, key_prefix: str):
                 else:
                     st.warning(f"结构文件不存在: {db_path}")
             
-            # 查找 HOMO/LUMO cube 文件
             orbital_files = find_orbital_files(infer_dir)
             
             with tab_homo:
                 if orbital_files.get('homo') and os.path.exists(orbital_files['homo']):
                     try:
-                        # 等值面滑块控制
                         st.markdown("**等值面设置**")
                         col1, col2 = st.columns([3, 1])
                         with col1:
@@ -540,7 +538,7 @@ def render_message_with_download(role: str, content: Any, key_prefix: str):
                                 step=0.005,
                                 format="%.3f",
                                 key=f"{key_prefix}_homo_iso",
-                                help="调大：轨道包络面收缩，显示高电子密度区域；调小：轨道包络面扩展，显示更大范围"
+                                help="调大：轨道包络面收缩；调小：轨道包络面扩展"
                             )
                         with col2:
                             st.metric("当前值", f"{homo_iso:.3f}")
@@ -562,7 +560,6 @@ def render_message_with_download(role: str, content: Any, key_prefix: str):
             with tab_lumo:
                 if orbital_files.get('lumo') and os.path.exists(orbital_files['lumo']):
                     try:
-                        # 等值面滑块控制
                         st.markdown("**等值面设置**")
                         col1, col2 = st.columns([3, 1])
                         with col1:
@@ -574,7 +571,7 @@ def render_message_with_download(role: str, content: Any, key_prefix: str):
                                 step=0.005,
                                 format="%.3f",
                                 key=f"{key_prefix}_lumo_iso",
-                                help="调大：轨道包络面收缩，显示高电子密度区域；调小：轨道包络面扩展，显示更大范围"
+                                help="调大：轨道包络面收缩；调小：轨道包络面扩展"
                             )
                         with col2:
                             st.metric("当前值", f"{lumo_iso:.3f}")
@@ -593,13 +590,11 @@ def render_message_with_download(role: str, content: Any, key_prefix: str):
                 else:
                     st.info("LUMO 轨道文件未生成或不可用")
 
-        # 显示单独的 3D 结构预览 (仅生成结构时)
         elif structure_match:
             db_path = structure_match.group(1).strip()
             if os.path.exists(db_path):
                 st.markdown("### 📊 结构预览")
                 
-                # 创建弹出式预览
                 with st.expander("🔬 点击查看 3D 分子结构 (可交互)", expanded=True):
                     try:
                         atoms = load_structure_from_db(db_path)
@@ -620,7 +615,6 @@ def render_message_with_download(role: str, content: Any, key_prefix: str):
                     except Exception as e:
                         st.error(f"结构预览失败: {e}")
 
-        # 处理下载按钮
         if download_match:
             file_path = download_match.group(1).strip()
             if os.path.exists(file_path):
@@ -635,13 +629,11 @@ def render_message_with_download(role: str, content: Any, key_prefix: str):
 
 
 def main():
-    """主函数：包含所有 Streamlit 的 UI 和执行逻辑"""
+    """主函数。"""
 
-    # 初始化
     schedule_cleanup()
     cookie_manager = get_manager()
 
-    # --- 认证逻辑 ---
     if "user" not in st.session_state:
         st.session_state["user"] = None
 
@@ -653,7 +645,6 @@ def main():
                 st.session_state["user"] = user_info
                 st.session_state["current_chat_id"] = None
 
-    # 如果未登录，显示登录页并停止
     if st.session_state["user"] is None:
         login_ui(cookie_manager)
         return
@@ -674,7 +665,7 @@ def main():
             st.rerun()
 
         st.markdown("---")
-        if st.button("➕ 新建对话", type="primary", use_container_width=True):
+        if st.button("+ 新建对话", type="primary", use_container_width=True):
             st.session_state["suppress_autocreate"] = False
             new_id = db.create_conversation(current_user["id"], title="New Chat")
             st.session_state["current_chat_id"] = new_id
@@ -705,7 +696,7 @@ def main():
                         st.session_state["current_chat_id"] = None
                         st.session_state["messages"] = []
                     safe_username = "".join([c for c in current_user["username"] if c.isalnum() or c in ("-", "_")])
-                    chat_folder = os.path.join("users", safe_username, "output", str(chat["id"]))
+                    chat_folder = os.path.join(get_project_root(), "users", safe_username, "output", str(chat["id"]))
                     if os.path.exists(chat_folder):
                         try:
                             shutil.rmtree(chat_folder)
@@ -730,7 +721,6 @@ def main():
         st.markdown("---")
         st.header("📚 知识库管理")
         
-        # 显示知识库状态（所有用户可见）
         try:
             kb_stats = get_index_stats(api_key)
             if "error" not in kb_stats:
@@ -741,7 +731,6 @@ def main():
         except Exception:
             st.warning("知识库未初始化")
         
-        # 索引按钮 - 仅管理员可见
         if current_user.get("username") in ADMIN_USERS:
             col_idx1, col_idx2 = st.columns(2)
             with col_idx1:
@@ -791,7 +780,7 @@ def main():
 
     if st.session_state.get("current_chat_id") is None:
         st.title("🧪 EMolAgent")
-        st.info("暂无对话，请在左侧点击“➕ 新建对话”。")
+        st.info("暂无对话，请在左侧点击 [+ 新建对话] 按钮。")
         return
 
     # 3. LLM Setup
@@ -829,8 +818,6 @@ def main():
         if len(st.session_state.messages) <= 2:
             db.update_conversation_title(current_chat_id, prompt_input[:20])
 
-        # LangChain new agent expects {"messages": [...]} style
-        # 并且可以配合 checkpointer 使用 thread_id 来维持同一对话的短期记忆
         config = {"configurable": {"thread_id": str(current_chat_id)}}
         context = Context(
             user_id=str(current_user.get("id")) if current_user else None,
@@ -846,19 +833,15 @@ def main():
                     context=context,
                 )
 
-                # create_agent 的返回通常是一个 dict，里面含 messages。
-                # 这里做一个稳健提取：优先取最后一条 assistant message 的 content。
                 output_text = None
                 msgs = response.get("messages") if isinstance(response, dict) else None
                 if msgs and isinstance(msgs, list):
-                    # msgs 里可能是 dict 或 BaseMessage；都做兼容
                     last = msgs[-1]
                     if isinstance(last, dict):
                         output_text = last.get("content")
                     else:
                         output_text = getattr(last, "content", None)
 
-                # 兜底：如果模型返回 structured_response 或 output 字段
                 if not output_text and isinstance(response, dict):
                     output_text = response.get("output") or response.get("structured_response")
 
@@ -886,10 +869,6 @@ def main():
                 st.session_state.messages.append({"role": "assistant", "content": error_msg})
                 db.add_message(current_chat_id, "assistant", error_msg)
 
-
-# ==============================================================================
-# 5. 程序入口保护
-# ==============================================================================
 
 if __name__ == "__main__":
     main()

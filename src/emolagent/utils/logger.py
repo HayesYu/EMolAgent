@@ -1,8 +1,17 @@
+"""
+日志配置模块
+
+提供全局统一的日志配置，支持控制台输出和文件轮转。
+"""
+
 import os
 import logging
 from logging.handlers import RotatingFileHandler
 
-LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+from emolagent.utils.paths import get_project_root
+
+# 日志目录使用项目根目录下的 logs 文件夹
+LOG_DIR = os.path.join(get_project_root(), "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
 
 LOG_FILE = os.path.join(LOG_DIR, "emol_agent.log")
@@ -10,6 +19,7 @@ LOG_FILE = os.path.join(LOG_DIR, "emol_agent.log")
 # 配置参数
 MAX_LOG_SIZE = 10 * 1024 * 1024  # 单个日志文件最大 10MB
 BACKUP_COUNT = 5  # 保留最多 5 个历史日志文件
+
 
 def setup_logger(name: str = "EMolAgent") -> logging.Logger:
     """
@@ -19,14 +29,20 @@ def setup_logger(name: str = "EMolAgent") -> logging.Logger:
     - 同时输出到控制台和文件
     - 日志文件大小超过 MAX_LOG_SIZE 后自动轮转
     - 最多保留 BACKUP_COUNT 个历史文件
+    
+    Args:
+        name: logger 名称
+        
+    Returns:
+        配置好的 Logger 实例
     """
-    logger = logging.getLogger(name)
+    _logger = logging.getLogger(name)
     
     # 避免重复添加 handler
-    if logger.handlers:
-        return logger
+    if _logger.handlers:
+        return _logger
     
-    logger.setLevel(logging.DEBUG)
+    _logger.setLevel(logging.DEBUG)
     
     # 日志格式
     formatter = logging.Formatter(
@@ -49,10 +65,11 @@ def setup_logger(name: str = "EMolAgent") -> logging.Logger:
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(formatter)
     
-    logger.addHandler(console_handler)
-    logger.addHandler(file_handler)
+    _logger.addHandler(console_handler)
+    _logger.addHandler(file_handler)
     
-    return logger
+    return _logger
 
 
+# 全局 logger 实例
 logger = setup_logger()

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "EMolAgent"
 version = "1.0.0"
-description = "EMolAgent"
+description = "EMolAgent - 计算化学 AI 助手，用于分子团簇建模与电子结构分析"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.10"
@@ -15,6 +15,7 @@ dependencies = [
     "streamlit",
     "extra-streamlit-components",
     "pyjwt",
+    "bcrypt",
     "langchain==1.2.0",
     "langchain-chroma==1.1.0",
     "langchain-classic==1.0.1",
@@ -22,13 +23,62 @@ dependencies = [
     "langchain-core==1.2.6",
     "langchain-google-genai==4.1.3",
     "langchain-text-splitters==1.1.0",
+    "langgraph",
     "h5py==3.11.0",
     "numpy==2.2.5",
     "openequivariance==0.4.1",
     "huggingface_hub",
+    "py3Dmol",
+    "pandas",
+    "chromadb",
+    "pypdf",
+    "unstructured",
+    "python-pptx",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest",
+    "black",
+    "isort",
+    "mypy",
 ]
+
+[project.scripts]
+emolagent = "emolagent.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+emolagent = ["py.typed"]
+
+[tool.black]
+line-length = 100
+target-version = ['py310', 'py311', 'py312']
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+    \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | _build
+  | buck-out
+  | build
+  | dist
+)/
+'''
+
+[tool.isort]
+profile = "black"
+line_length = 100
+src_paths = ["src"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true

@@ -6,6 +6,7 @@ EMolAgent 是一个基于大语言模型的计算化学 AI 助手，集成分子
 
 - [EMolAgent](#emolagent)
   - [目录](#目录)
+  - [项目结构](#项目结构)
   - [环境要求](#环境要求)
   - [安装步骤](#安装步骤)
     - [1. 创建 Conda 环境](#1-创建-conda-环境)
@@ -25,6 +26,34 @@ EMolAgent 是一个基于大语言模型的计算化学 AI 助手，集成分子
     - [使用 RAG 功能](#使用-rag-功能)
   - [许可证](#许可证)
   - [致谢](#致谢)
+
+## 项目结构
+
+```
+EMolAgent/
+├── src/emolagent/           # 主程序包
+│   ├── app.py               # Streamlit 主应用
+│   ├── core/                # 核心功能模块
+│   │   ├── cluster_factory.py   # 分子团簇构建
+│   │   ├── uma_optimizer.py     # UMA 结构优化
+│   │   └── tools.py             # LangChain 工具集
+│   ├── database/            # 数据库模块
+│   │   └── db.py                # 用户与会话管理
+│   ├── knowledge/           # RAG 知识库模块
+│   │   └── knowledge_base.py    # 文献问答系统
+│   ├── visualization/       # 可视化模块
+│   │   └── mol_viewer.py        # 3D 分子可视化
+│   └── utils/               # 工具模块
+│       ├── logger.py            # 日志配置
+│       └── paths.py             # 路径管理
+├── resources/               # 资源文件
+│   ├── models/              # 模型权重文件
+│   └── db/                  # 数据库文件
+├── data/                    # ChromaDB 向量数据库
+├── users/                   # 用户数据目录
+├── run.py                   # 启动脚本
+└── pyproject.toml           # 项目配置
+```
 
 ## 环境要求
 
@@ -187,9 +216,9 @@ pip install -e .
 
 ## 配置
 
-1. 根据实际需求，修改 `app.py` 和 `knowledge_base.py` 顶部的文件路径配置
+1. 路径配置已集中管理于 `src/emolagent/utils/paths.py`，一般无需修改
 
-2. 前往 [Google AI Studio](https://aistudio.google. com/app/api-keys) 注册您的 Google API Key
+2. 前往 [Google AI Studio](https://aistudio.google.com/app/api-keys) 注册您的 Google API Key
 
 ## 使用方法
 
@@ -198,23 +227,21 @@ pip install -e .
 ```bash
 cd /path/to/EMolAgent/
 export GOOGLE_API_KEY="Your Google API KEY"
-streamlit run app.py
+
+# 方式一：使用启动脚本（推荐）
+python run.py
+
+# 方式二：直接运行 Streamlit
+streamlit run src/emolagent/app.py
 ```
 
 ### 使用 RAG 功能
 
-1. 修改 `knowledge_base.py` 顶部的文献路径配置
+1. 将文献 PDF 文件放置于配置的文献目录中（默认路径见 `src/emolagent/knowledge/knowledge_base.py`）
 
-2. 在 `app.py` 顶部的 `ADMIN_USERS` 中添加您的用户名
+2. 在 `src/emolagent/app.py` 顶部的 `ADMIN_USERS` 中添加您的用户名
 
-3. 启动应用：
-
-```bash
-cd path/to/EMolAgent/
-streamlit run app.py
-```
-
-4. 在左侧栏中点击 **"重建索引"** 即可使用 RAG 功能
+3. 启动应用后，在左侧栏中点击 **"重建索引"** 即可使用 RAG 功能
 
 ## 许可证
 

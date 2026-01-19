@@ -16,3 +16,5 @@ logs/
 resources/models/
 
 check_google_models.py
+
+*.egg-info/
