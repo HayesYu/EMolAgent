@@ -1,26 +1,30 @@
 # EMolAgent
 
-EMolAgent 是一个基于大语言模型的分子模拟智能代理系统，集成了多种分子计算工具和 RAG（检索增强生成）功能。
+EMolAgent 是一个基于大语言模型的计算化学 AI 助手，集成分子团簇计算（结构构建并优化 + 电子性质预测）和 RAG 文献问答功能。
 
 ## 目录
 
-- [环境要求](#环境要求)
-- [安装步骤](#安装步骤)
-  - [1. 创建 Conda 环境](#1-创建-conda-环境)
-  - [2. 安装基础依赖](#2-安装基础依赖)
-  - [3. 克隆并安装 EMolAgent](#3-克隆并安装-emolagent)
-  - [4. 安装 DeePTB](#4-安装-deeptb)
-  - [5. 安装 EMolES](#5-安装-emoles)
-  - [6. 安装 learn_qh9](#6-安装-learn_qh9)
-  - [7. 安装 dftio](#7-安装-dftio)
-  - [8. 克隆 ai4mol](#8-克隆-ai4mol)
-  - [9. 安装 Multiwfn](#9-安装-multiwfn)
-  - [10. 安装其他依赖](#10-安装其他依赖)
-  - [11. 下载模型文件](#11-下载模型文件)
-- [配置](#配置)
-- [使用方法](#使用方法)
-  - [启动应用](#启动应用)
-  - [使用 RAG 功能](#使用-rag-功能)
+- [EMolAgent](#emolagent)
+  - [目录](#目录)
+  - [环境要求](#环境要求)
+  - [安装步骤](#安装步骤)
+    - [1. 创建 Conda 环境](#1-创建-conda-环境)
+    - [2. 安装基础依赖](#2-安装基础依赖)
+    - [3. 克隆 EMolAgent](#3-克隆-emolagent)
+    - [4. 安装 DeePTB](#4-安装-deeptb)
+    - [5. 安装 EMolES](#5-安装-emoles)
+    - [6. 安装 learn\_qh9](#6-安装-learn_qh9)
+    - [7. 安装 dftio](#7-安装-dftio)
+    - [8. 克隆 ai4mol](#8-克隆-ai4mol)
+    - [9. 安装 Multiwfn](#9-安装-multiwfn)
+    - [10. 安装其他依赖](#10-安装其他依赖)
+    - [11. 下载模型文件](#11-下载模型文件)
+  - [配置](#配置)
+  - [使用方法](#使用方法)
+    - [启动应用](#启动应用)
+    - [使用 RAG 功能](#使用-rag-功能)
+  - [许可证](#许可证)
+  - [致谢](#致谢)
 
 ## 环境要求
 
@@ -46,7 +50,7 @@ pip install torch_geometric
 pip install torch_scatter torch_sparse torch_cluster torch_spline_conv pyg_lib -f https://data.pyg.org/whl/torch-2.8.0+cu128. html
 ```
 
-### 3. 克隆并安装 EMolAgent
+### 3. 克隆 EMolAgent
 
 ```bash
 git clone https://github.com/HayesYu/EMolAgent.git
@@ -164,20 +168,12 @@ conda install mokit -c mokit -c conda-forge -y
 # 安装系统依赖
 sudo apt install -y libcairo2-dev pkg-config python3-dev
 
-# 安装 Python 包
-pip install deeprep
-pip install streamlit
-pip install extra-streamlit-components
-pip install pyjwt
-pip install langchain==1.2.0 langchain-chroma==1.1.0 langchain-classic==1.0.1 langchain-community==0.4.1 langchain-core==1.2.6 langchain-google-genai==4.1.3 langchain-text-splitters==1.1.0
-
 # 安装 RDKit
 conda install -c conda-forge rdkit
 
-# 安装其他依赖
-pip install h5py==3.11.0 numpy==2.2.5
-pip install openequivariance==0.4.1
-pip install -U "huggingface_hub"
+# 安装 EMolAgent 及其 Python 依赖
+cd EMolAgent/
+pip install -e .
 ```
 
 ### 11. 下载模型文件

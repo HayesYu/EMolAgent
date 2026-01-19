@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "EMolAgent"
+version = "1.0.0"
+description = "EMolAgent"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+
+dependencies = [
+    "deeprep",
+    "streamlit",
+    "extra-streamlit-components",
+    "pyjwt",
+    "langchain==1.2.0",
+    "langchain-chroma==1.1.0",
+    "langchain-classic==1.0.1",
+    "langchain-community==0.4.1",
+    "langchain-core==1.2.6",
+    "langchain-google-genai==4.1.3",
+    "langchain-text-splitters==1.1.0",
+    "h5py==3.11.0",
+    "numpy==2.2.5",
+    "openequivariance==0.4.1",
+    "huggingface_hub",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+]
