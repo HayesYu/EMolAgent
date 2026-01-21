@@ -412,6 +412,680 @@ def create_li_deformation_viewer(
         return f"<p style='color: red;'>加载 Li Deformation 可视化失败: {e}</p>"
 
 
+def find_esp_files(inference_dir: str) -> Dict[str, Optional[str]]:
+    """
+    在推断结果目录中查找 ESP 可视化所需的文件。
+    
+    Returns:
+        包含 'density', 'esp', 'info' 键的字典
+    """
+    result: Dict[str, Optional[str]] = {'density': None, 'esp': None, 'info': None}
+    
+    if not os.path.exists(inference_dir):
+        return result
+    
+    # 搜索模式
+    search_dirs = [
+        os.path.join(inference_dir, "results", "*"),
+        os.path.join(inference_dir, "*"),
+        inference_dir,
+    ]
+    
+    for search_dir in search_dirs:
+        dirs = glob.glob(search_dir) if '*' in search_dir else [search_dir]
+        for d in dirs:
+            if not os.path.isdir(d):
+                continue
+            
+            # 查找 density cube 文件
+            density_candidates = [
+                os.path.join(d, "infer_ESPCalculator_density.cub"),
+                os.path.join(d, "density.cub"),
+                os.path.join(d, "density.cube"),
+            ]
+            for f in density_candidates:
+                if os.path.exists(f) and result['density'] is None:
+                    result['density'] = f
+                    break
+            
+            # 查找 ESP cube 文件
+            esp_candidates = [
+                os.path.join(d, "infer_ESPCalculator_totesp.cub"),
+                os.path.join(d, "totesp.cub"),
+                os.path.join(d, "esp.cub"),
+                os.path.join(d, "esp.cube"),
+            ]
+            for f in esp_candidates:
+                if os.path.exists(f) and result['esp'] is None:
+                    result['esp'] = f
+                    break
+            
+            # 查找 info json 文件
+            info_candidates = [
+                os.path.join(d, "infer_esp_info.json"),
+                os.path.join(d, "esp_info.json"),
+            ]
+            for f in info_candidates:
+                if os.path.exists(f) and result['info'] is None:
+                    result['info'] = f
+                    break
+            
+            # 如果找齐了就返回
+            if all(result.values()):
+                return result
+    
+    return result
+
+
+def load_esp_info(info_path: str) -> Optional[Dict[str, Any]]:
+    """
+    加载 ESP info JSON 文件。
+    
+    Returns:
+        包含 ESP 最大/最小值及位置的字典
+    """
+    if not info_path or not os.path.exists(info_path):
+        return None
+    
+    try:
+        with open(info_path, 'r') as f:
+            return json.load(f)
+    except Exception as e:
+        logger.error(f"Error loading ESP info: {e}")
+        return None
+
+
+def parse_cube_file(cube_path: str) -> Tuple[List[Dict], np.ndarray, Dict]:
+    """
+    解析 Gaussian cube 文件格式。
+    
+    Returns:
+        (atoms_list, grid_data, grid_info)
+        - atoms_list: 原子列表，每个原子包含 {'symbol', 'x', 'y', 'z'}
+        - grid_data: 3D numpy 数组的网格数据
+        - grid_info: 网格信息字典
+    """
+    with open(cube_path, 'r') as f:
+        lines = f.readlines()
+    
+    # 跳过前两行注释
+    # 第3行: 原子数和原点坐标
+    parts = lines[2].split()
+    n_atoms = abs(int(parts[0]))
+    origin = [float(parts[1]), float(parts[2]), float(parts[3])]
+    
+    # 第4-6行: 各轴的网格点数和步长向量
+    nx, vx = int(lines[3].split()[0]), [float(x) for x in lines[3].split()[1:4]]
+    ny, vy = int(lines[4].split()[0]), [float(x) for x in lines[4].split()[1:4]]
+    nz, vz = int(lines[5].split()[0]), [float(x) for x in lines[5].split()[1:4]]
+    
+    grid_info = {
+        'origin': origin,
+        'n_points': (nx, ny, nz),
+        'vectors': (vx, vy, vz)
+    }
+    
+    # 解析原子信息
+    atoms_list = []
+    for i in range(n_atoms):
+        parts = lines[6 + i].split()
+        z = int(float(parts[0]))
+        x, y, z_coord = float(parts[2]), float(parts[3]), float(parts[4])
+        atoms_list.append({
+            'symbol': atomic_number_to_symbol(z),
+            'x': x * 0.529177,  # Bohr to Angstrom
+            'y': y * 0.529177,
+            'z': z_coord * 0.529177
+        })
+    
+    # 解析网格数据
+    data_start = 6 + n_atoms
+    data_values = []
+    for line in lines[data_start:]:
+        data_values.extend([float(x) for x in line.split()])
+    
+    grid_data = np.array(data_values).reshape((nx, ny, nz))
+    
+    return atoms_list, grid_data, grid_info
+
+
+def atoms_list_to_xyz_string(atoms_list: List[Dict], comment: str = "") -> str:
+    """将原子列表转换为 XYZ 格式字符串。"""
+    n_atoms = len(atoms_list)
+    lines = [str(n_atoms), comment]
+    
+    for atom in atoms_list:
+        lines.append(f"{atom['symbol']:2s} {atom['x']:12.6f} {atom['y']:12.6f} {atom['z']:12.6f}")
+    
+    return "\n".join(lines)
+
+
+def value_to_bwr_color(value: float, vmin: float, vmax: float) -> str:
+    """
+    将数值映射到 BWR (蓝-白-红) 色阶。
+    
+    Args:
+        value: 要映射的值
+        vmin: 最小值（对应蓝色）
+        vmax: 最大值（对应红色）
+        
+    Returns:
+        十六进制颜色字符串
+    """
+    # 归一化到 [-1, 1]
+    if vmax == vmin:
+        norm = 0
+    else:
+        mid = (vmax + vmin) / 2
+        half_range = (vmax - vmin) / 2
+        if half_range == 0:
+            norm = 0
+        else:
+            norm = (value - mid) / half_range
+    
+    norm = max(-1, min(1, norm))  # clamp
+    
+    if norm < 0:
+        # 蓝到白：增加红和绿
+        r = int(255 * (1 + norm))
+        g = int(255 * (1 + norm))
+        b = 255
+    else:
+        # 白到红：减少绿和蓝
+        r = 255
+        g = int(255 * (1 - norm))
+        b = int(255 * (1 - norm))
+    
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+def parse_cube_file_full(cube_path: str) -> Tuple[List[Dict], np.ndarray, Dict]:
+    """
+    解析 Gaussian cube 文件格式，返回完整的网格信息（用于 marching cubes）。
+    
+    Returns:
+        (atoms_list, grid_data, grid_info)
+        - atoms_list: 原子列表，每个原子包含 {'symbol', 'x', 'y', 'z'} (Angstrom)
+        - grid_data: 3D numpy 数组的网格数据
+        - grid_info: 网格信息字典，包含 origin, n_points, spacing (全部 Bohr 单位)
+    """
+    with open(cube_path, 'r') as f:
+        lines = f.readlines()
+    
+    # 第3行: 原子数和原点坐标 (Bohr)
+    parts = lines[2].split()
+    n_atoms = abs(int(parts[0]))
+    origin = np.array([float(parts[1]), float(parts[2]), float(parts[3])])
+    
+    # 第4-6行: 各轴的网格点数和步长向量 (Bohr)
+    nx = int(lines[3].split()[0])
+    dx = float(lines[3].split()[1])  # 假设是正交网格，只取对角元素
+    
+    ny = int(lines[4].split()[0])
+    dy = float(lines[4].split()[2])
+    
+    nz = int(lines[5].split()[0])
+    dz = float(lines[5].split()[3])
+    
+    grid_info = {
+        'origin': origin,  # Bohr
+        'n_points': (nx, ny, nz),
+        'spacing': (dx, dy, dz),  # Bohr
+    }
+    
+    # 解析原子信息
+    BOHR_TO_ANG = 0.529177
+    atoms_list = []
+    for i in range(n_atoms):
+        parts = lines[6 + i].split()
+        z = int(float(parts[0]))
+        x_bohr, y_bohr, z_bohr = float(parts[2]), float(parts[3]), float(parts[4])
+        atoms_list.append({
+            'symbol': atomic_number_to_symbol(z),
+            'x': x_bohr * BOHR_TO_ANG,
+            'y': y_bohr * BOHR_TO_ANG,
+            'z': z_bohr * BOHR_TO_ANG
+        })
+    
+    # 解析网格数据
+    data_start = 6 + n_atoms
+    data_values = []
+    for line in lines[data_start:]:
+        data_values.extend([float(x) for x in line.split()])
+    
+    grid_data = np.array(data_values).reshape((nx, ny, nz))
+    
+    return atoms_list, grid_data, grid_info
+
+
+def create_esp_viewer(
+    density_cube_path: str,
+    esp_cube_path: str,
+    esp_info_path: Optional[str] = None,
+    width: int = 600,
+    height: int = 500,
+    density_isovalue: float = 0.001,
+    esp_colorscale_min: float = -0.03,
+    esp_colorscale_max: float = 0.03,
+    surface_opacity: float = 0.85,
+    background_color: str = "#1a1a2e",
+    show_extrema: bool = True,
+) -> str:
+    """
+    创建 ESP (静电势) 映射在分子 vdW 表面上的可视化查看器。
+    
+    使用 Marching Cubes 从密度 cube 提取等值面，然后用 ESP 值对顶点着色，
+    实现类似 VMD 的 BWR 渐变色效果。
+    
+    Args:
+        density_cube_path: 电子密度 cube 文件路径
+        esp_cube_path: ESP cube 文件路径
+        esp_info_path: ESP info JSON 文件路径（可选）
+        width: 查看器宽度
+        height: 查看器高度
+        density_isovalue: 密度等值面数值（默认 0.001 对应 vdW 表面）
+        esp_colorscale_min: ESP 颜色标度最小值（原子单位，默认 -0.03）
+        esp_colorscale_max: ESP 颜色标度最大值（原子单位，默认 0.03）
+        surface_opacity: 表面透明度
+        background_color: 背景颜色
+        show_extrema: 是否显示 ESP 极值点
+        
+    Returns:
+        包含交互式 3D 查看器的 HTML 字符串
+    """
+    if not os.path.exists(density_cube_path):
+        return f"<p style='color: red;'>密度 Cube 文件不存在: {density_cube_path}</p>"
+    if not os.path.exists(esp_cube_path):
+        return f"<p style='color: red;'>ESP Cube 文件不存在: {esp_cube_path}</p>"
+    
+    try:
+        from skimage.measure import marching_cubes
+        from scipy.interpolate import RegularGridInterpolator
+        import plotly.graph_objects as go
+        
+        BOHR_TO_ANG = 0.529177
+        
+        # 1. 解析 cube 文件
+        atoms_list, density_data, density_info = parse_cube_file_full(density_cube_path)
+        _, esp_data, esp_info_grid = parse_cube_file_full(esp_cube_path)
+        
+        # 加载 ESP info (极值信息)
+        esp_info = None
+        if esp_info_path:
+            esp_info = load_esp_info(esp_info_path)
+        
+        # 2. 使用 Marching Cubes 提取密度等值面
+        origin = density_info['origin']
+        nx, ny, nz = density_info['n_points']
+        dx, dy, dz = density_info['spacing']
+        
+        # marching_cubes 返回的顶点是以网格索引为单位，需要转换
+        verts, faces, normals, values = marching_cubes(
+            density_data,
+            level=density_isovalue,
+            spacing=(dx, dy, dz)  # Bohr
+        )
+        
+        # 将顶点坐标从网格空间转换到实际坐标 (Bohr -> Angstrom)
+        verts_bohr = verts + origin  # 加上原点偏移
+        verts_ang = verts_bohr * BOHR_TO_ANG
+        
+        # 3. 构建 ESP 插值器，在等值面顶点采样 ESP 值
+        # ESP 网格坐标 (Bohr)
+        esp_origin = esp_info_grid['origin']
+        esp_nx, esp_ny, esp_nz = esp_info_grid['n_points']
+        esp_dx, esp_dy, esp_dz = esp_info_grid['spacing']
+        
+        x_esp = np.linspace(esp_origin[0], esp_origin[0] + (esp_nx - 1) * esp_dx, esp_nx)
+        y_esp = np.linspace(esp_origin[1], esp_origin[1] + (esp_ny - 1) * esp_dy, esp_ny)
+        z_esp = np.linspace(esp_origin[2], esp_origin[2] + (esp_nz - 1) * esp_dz, esp_nz)
+        
+        esp_interp = RegularGridInterpolator(
+            (x_esp, y_esp, z_esp), 
+            esp_data,
+            method='linear',
+            bounds_error=False,
+            fill_value=0.0
+        )
+        
+        # 在等值面顶点采样 ESP 值 (使用 Bohr 坐标)
+        esp_at_verts = esp_interp(verts_bohr)
+        
+        # 4. 将 ESP 值映射到 BWR 颜色
+        # 归一化 ESP 值到 [0, 1] 范围
+        esp_normalized = (esp_at_verts - esp_colorscale_min) / (esp_colorscale_max - esp_colorscale_min)
+        esp_normalized = np.clip(esp_normalized, 0, 1)
+        
+        # BWR 颜色映射：蓝(0) -> 白(0.5) -> 红(1)
+        colors = np.zeros((len(esp_normalized), 3))
+        
+        # 蓝到白 (esp_normalized < 0.5)
+        mask_low = esp_normalized < 0.5
+        t = esp_normalized[mask_low] * 2  # 0->0, 0.5->1
+        colors[mask_low, 0] = t  # R: 0->1
+        colors[mask_low, 1] = t  # G: 0->1
+        colors[mask_low, 2] = 1  # B: 1
+        
+        # 白到红 (esp_normalized >= 0.5)
+        mask_high = ~mask_low
+        t = (esp_normalized[mask_high] - 0.5) * 2  # 0.5->0, 1->1
+        colors[mask_high, 0] = 1  # R: 1
+        colors[mask_high, 1] = 1 - t  # G: 1->0
+        colors[mask_high, 2] = 1 - t  # B: 1->0
+        
+        # 转换为 Plotly 格式的颜色字符串
+        vertex_colors = [f'rgb({int(c[0]*255)},{int(c[1]*255)},{int(c[2]*255)})' for c in colors]
+        
+        # 5. 创建 Plotly 3D 图形
+        fig = go.Figure()
+        
+        # 添加 ESP 着色的等值面
+        fig.add_trace(go.Mesh3d(
+            x=verts_ang[:, 0],
+            y=verts_ang[:, 1],
+            z=verts_ang[:, 2],
+            i=faces[:, 0],
+            j=faces[:, 1],
+            k=faces[:, 2],
+            vertexcolor=vertex_colors,
+            opacity=surface_opacity,
+            name='ESP Surface',
+            hoverinfo='skip',
+            lighting=dict(
+                ambient=0.5,
+                diffuse=0.8,
+                specular=0.3,
+                roughness=0.5,
+            ),
+            lightposition=dict(x=100, y=200, z=300),
+        ))
+        
+        # 添加分子骨架
+        for atom in atoms_list:
+            color = ELEMENT_COLORS.get(atom['symbol'], ELEMENT_COLORS['default'])
+            radius = ELEMENT_RADII.get(atom['symbol'], ELEMENT_RADII['default']) * 0.3
+            
+            # 创建球体的近似（使用 scatter3d）
+            fig.add_trace(go.Scatter3d(
+                x=[atom['x']],
+                y=[atom['y']],
+                z=[atom['z']],
+                mode='markers',
+                marker=dict(
+                    size=radius * 20,
+                    color=color,
+                    opacity=1.0,
+                ),
+                name=atom['symbol'],
+                hoverinfo='text',
+                hovertext=f"{atom['symbol']} ({atom['x']:.2f}, {atom['y']:.2f}, {atom['z']:.2f})",
+                showlegend=False,
+            ))
+        
+        # 添加键（简单版本：基于距离判断）
+        bond_x, bond_y, bond_z = [], [], []
+        for i, atom1 in enumerate(atoms_list):
+            for j, atom2 in enumerate(atoms_list):
+                if j <= i:
+                    continue
+                dist = np.sqrt(
+                    (atom1['x'] - atom2['x'])**2 + 
+                    (atom1['y'] - atom2['y'])**2 + 
+                    (atom1['z'] - atom2['z'])**2
+                )
+                # 简单的键长判断
+                max_bond = 1.8  # Angstrom
+                if atom1['symbol'] in ['S', 'P', 'Cl', 'Br', 'I'] or atom2['symbol'] in ['S', 'P', 'Cl', 'Br', 'I']:
+                    max_bond = 2.5
+                if dist < max_bond:
+                    bond_x.extend([atom1['x'], atom2['x'], None])
+                    bond_y.extend([atom1['y'], atom2['y'], None])
+                    bond_z.extend([atom1['z'], atom2['z'], None])
+        
+        if bond_x:
+            fig.add_trace(go.Scatter3d(
+                x=bond_x, y=bond_y, z=bond_z,
+                mode='lines',
+                line=dict(color='#888888', width=3),
+                hoverinfo='skip',
+                showlegend=False,
+            ))
+        
+        # 添加 ESP 极值点标注
+        extrema_html = ""
+        if show_extrema and esp_info:
+            if 'ESP_max_location_Ang' in esp_info:
+                max_loc = esp_info['ESP_max_location_Ang']
+                max_val = esp_info.get('ESP_max_eV', 0)
+                fig.add_trace(go.Scatter3d(
+                    x=[max_loc[0]], y=[max_loc[1]], z=[max_loc[2]],
+                    mode='markers+text',
+                    marker=dict(size=8, color='#FF0000', symbol='diamond'),
+                    text=[f'Max: {max_val:.2f} eV'],
+                    textposition='top center',
+                    textfont=dict(color='#FF6666', size=10),
+                    hoverinfo='text',
+                    hovertext=f'ESP Max: {max_val:.2f} eV',
+                    showlegend=False,
+                ))
+                extrema_html += f'<span style="color: #FF6666;">◆ Max: {max_val:.2f} eV</span> '
+            
+            if 'ESP_min_location_Ang' in esp_info:
+                min_loc = esp_info['ESP_min_location_Ang']
+                min_val = esp_info.get('ESP_min_eV', 0)
+                fig.add_trace(go.Scatter3d(
+                    x=[min_loc[0]], y=[min_loc[1]], z=[min_loc[2]],
+                    mode='markers+text',
+                    marker=dict(size=8, color='#0000FF', symbol='diamond'),
+                    text=[f'Min: {min_val:.2f} eV'],
+                    textposition='top center',
+                    textfont=dict(color='#6666FF', size=10),
+                    hoverinfo='text',
+                    hovertext=f'ESP Min: {min_val:.2f} eV',
+                    showlegend=False,
+                ))
+                extrema_html += f'<span style="color: #6666FF;">◆ Min: {min_val:.2f} eV</span>'
+        
+        # 6. 设置布局
+        # 解析背景色
+        bg_color = background_color
+        
+        fig.update_layout(
+            scene=dict(
+                xaxis=dict(visible=False),
+                yaxis=dict(visible=False),
+                zaxis=dict(visible=False),
+                bgcolor=bg_color,
+                aspectmode='data',
+            ),
+            paper_bgcolor=bg_color,
+            plot_bgcolor=bg_color,
+            margin=dict(l=0, r=0, t=0, b=0),
+            width=width,
+            height=height,
+            showlegend=False,
+        )
+        
+        # 7. 生成 HTML
+        plotly_html = fig.to_html(
+            include_plotlyjs='cdn',
+            full_html=False,
+            config={
+                'displayModeBar': True,
+                'modeBarButtonsToRemove': ['select2d', 'lasso2d'],
+                'displaylogo': False,
+            }
+        )
+        
+        # 创建色阶条 HTML
+        colorbar_html = f"""
+        <div style="display: flex; align-items: center; justify-content: center; margin-top: 5px;">
+            <span style="color: #4444FF; font-size: 11px;">{esp_colorscale_min:.3f}</span>
+            <div style="
+                width: 150px; 
+                height: 12px; 
+                margin: 0 8px;
+                background: linear-gradient(to right, #0000FF, #FFFFFF, #FF0000);
+                border-radius: 2px;
+            "></div>
+            <span style="color: #FF4444; font-size: 11px;">{esp_colorscale_max:.3f}</span>
+            <span style="color: #888; font-size: 10px; margin-left: 5px;">(a.u.)</span>
+        </div>
+        """
+        
+        wrapper_html = f"""
+        <div style="border: 2px solid #4a4a6a; border-radius: 8px; padding: 10px; background: #0d0d1a;">
+            <div style="color: #aaa; font-size: 12px; margin-bottom: 5px; text-align: center;">
+                🖱️ 左键拖动旋转 | 滚轮缩放 | 右键平移
+            </div>
+            {plotly_html}
+            <div style="color: #888; font-size: 11px; margin-top: 5px; text-align: center;">
+                静电势 (ESP) | 密度等值面: {density_isovalue} | 
+                <span style="color: #FF4444;">红</span>=正(亲核) | 
+                <span style="color: #4444FF;">蓝</span>=负(亲电)
+            </div>
+            {colorbar_html}
+            {f'<div style="color: #888; font-size: 11px; margin-top: 3px; text-align: center;">{extrema_html}</div>' if extrema_html else ''}
+        </div>
+        """
+        
+        return wrapper_html
+        
+    except ImportError as e:
+        missing_pkg = str(e).split("'")[-2] if "'" in str(e) else str(e)
+        return f"""
+        <div style="border: 2px solid #ff6666; border-radius: 8px; padding: 15px; background: #1a0d0d;">
+            <p style='color: #ff6666; margin: 0;'>
+                <strong>缺少依赖包:</strong> {missing_pkg}
+            </p>
+            <p style='color: #aaa; margin: 10px 0 0 0; font-size: 12px;'>
+                请运行: <code style="background: #333; padding: 2px 6px; border-radius: 3px;">pip install scikit-image scipy plotly</code>
+            </p>
+        </div>
+        """
+    except Exception as e:
+        import traceback
+        logger.error(f"ESP visualization error: {traceback.format_exc()}")
+        return f"<p style='color: red;'>加载 ESP 可视化失败: {e}</p>"
+
+
+def create_esp_viewer_fallback(
+    density_cube_path: str,
+    esp_cube_path: str,
+    esp_info_path: Optional[str] = None,
+    width: int = 600,
+    height: int = 500,
+    density_isovalue: float = 0.001,
+    esp_colorscale_min: float = -0.03,
+    esp_colorscale_max: float = 0.03,
+    surface_opacity: float = 0.85,
+    background_color: str = "#1a1a2e",
+    show_extrema: bool = True,
+) -> str:
+    """
+    ESP 可视化的后备方案（使用 py3Dmol，效果较简单）。
+    当 scikit-image/plotly 不可用时使用。
+    """
+    if not os.path.exists(density_cube_path):
+        return f"<p style='color: red;'>密度 Cube 文件不存在: {density_cube_path}</p>"
+    if not os.path.exists(esp_cube_path):
+        return f"<p style='color: red;'>ESP Cube 文件不存在: {esp_cube_path}</p>"
+    
+    try:
+        with open(density_cube_path, 'r') as f:
+            density_content = f.read()
+        with open(esp_cube_path, 'r') as f:
+            esp_content = f.read()
+        
+        esp_info = None
+        if esp_info_path:
+            esp_info = load_esp_info(esp_info_path)
+        
+        viewer = py3Dmol.view(width=width, height=height)
+        
+        viewer.addModel(density_content, "cube")
+        viewer.setStyle({
+            'sphere': {'colorscheme': 'Jmol', 'scale': 0.2},
+            'stick': {'radius': 0.1, 'colorscheme': 'Jmol'}
+        })
+        
+        pos_iso = abs(esp_colorscale_max) * 0.5
+        viewer.addVolumetricData(esp_content, "cube", {
+            'isoval': pos_iso,
+            'color': '#FF4444',
+            'opacity': 0.6,
+            'smoothness': 3
+        })
+        
+        neg_iso = -abs(esp_colorscale_min) * 0.5
+        viewer.addVolumetricData(esp_content, "cube", {
+            'isoval': neg_iso,
+            'color': '#4444FF',
+            'opacity': 0.6,
+            'smoothness': 3
+        })
+        
+        extrema_html = ""
+        if show_extrema and esp_info:
+            if 'ESP_max_location_Ang' in esp_info:
+                max_loc = esp_info['ESP_max_location_Ang']
+                max_val = esp_info.get('ESP_max_eV', 0)
+                viewer.addSphere({
+                    'center': {'x': max_loc[0], 'y': max_loc[1], 'z': max_loc[2]},
+                    'radius': 0.3,
+                    'color': '#FF0000',
+                    'opacity': 0.9
+                })
+                extrema_html += f'<span style="color: #FF6666;">● Max: {max_val:.2f} eV</span> '
+            
+            if 'ESP_min_location_Ang' in esp_info:
+                min_loc = esp_info['ESP_min_location_Ang']
+                min_val = esp_info.get('ESP_min_eV', 0)
+                viewer.addSphere({
+                    'center': {'x': min_loc[0], 'y': min_loc[1], 'z': min_loc[2]},
+                    'radius': 0.3,
+                    'color': '#0000FF',
+                    'opacity': 0.9
+                })
+                viewer.addLabel(f"Min: {min_val:.2f} eV", {
+                    'position': {'x': min_loc[0], 'y': min_loc[1], 'z': min_loc[2] + 1.0},
+                    'fontSize': 10,
+                    'fontColor': '#6666FF',
+                    'backgroundColor': '#000000',
+                    'backgroundOpacity': 0.7
+                })
+                extrema_html += f'<span style="color: #6666FF;">● Min: {min_val:.2f} eV</span>'
+        
+        # 设置背景和视图
+        viewer.setBackgroundColor(background_color)
+        viewer.zoomTo()
+        
+        html = viewer._make_html()
+        
+        # 构建包装 HTML
+        wrapper_html = f"""
+        <div style="border: 2px solid #4a4a6a; border-radius: 8px; padding: 10px; background: #0d0d1a;">
+            <div style="color: #aaa; font-size: 12px; margin-bottom: 5px; text-align: center;">
+                🖱️ 左键拖动旋转 | 滚轮缩放 | 右键平移
+            </div>
+            {html}
+            <div style="color: #888; font-size: 11px; margin-top: 5px; text-align: center;">
+                静电势 (ESP) | 等值面: ±{pos_iso:.4f} a.u. &nbsp;
+                <span style="color: #FF4444;">■</span> 正(亲核) &nbsp;
+                <span style="color: #4444FF;">■</span> 负(亲电)
+            </div>
+            {f'<div style="color: #888; font-size: 11px; margin-top: 3px; text-align: center;">{extrema_html}</div>' if extrema_html else ''}
+        </div>
+        """
+        
+        return wrapper_html
+        
+    except Exception as e:
+        import traceback
+        logger.error(f"ESP visualization error: {traceback.format_exc()}")
+        return f"<p style='color: red;'>加载 ESP 可视化失败: {e}</p>"
+
+
 def create_structure_preview_html(db_path: str, max_structures: int = 3) -> str:
     """为数据库中的结构创建 HTML 预览。"""
     if not os.path.exists(db_path):
@@ -462,18 +1136,20 @@ def create_analysis_visualization_html(
     height: int = 450
 ) -> Dict[str, Any]:
     """
-    创建结构、HOMO、LUMO 的可视化 HTML。
+    创建结构、HOMO、LUMO、ESP 的可视化 HTML。
     
     Returns:
-        包含 'structure', 'homo', 'lumo' 键的字典
+        包含 'structure', 'homo', 'lumo', 'esp' 键的字典
     """
     result: Dict[str, Any] = {
         'structure': None,
         'homo': None,
         'lumo': None,
+        'esp': None,
         'structure_available': False,
         'homo_available': False,
-        'lumo_available': False
+        'lumo_available': False,
+        'esp_available': False
     }
     
     if db_path and os.path.exists(db_path):
@@ -508,6 +1184,18 @@ def create_analysis_visualization_html(
             orbital_type="LUMO"
         )
         result['lumo_available'] = True
+    
+    # 查找并创建 ESP 可视化
+    esp_files = find_esp_files(inference_dir)
+    if esp_files['density'] and esp_files['esp']:
+        result['esp'] = create_esp_viewer(
+            esp_files['density'],
+            esp_files['esp'],
+            esp_files['info'],
+            width=width,
+            height=height
+        )
+        result['esp_available'] = True
     
     return result
 

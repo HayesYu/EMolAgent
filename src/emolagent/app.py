@@ -48,7 +48,9 @@ from emolagent.visualization import (
     find_orbital_files,
     find_li_deformation_files,
     create_li_deformation_viewer,
-    create_analysis_visualization_html
+    create_analysis_visualization_html,
+    find_esp_files,
+    create_esp_viewer,
 )
 import streamlit.components.v1 as components
 
@@ -501,19 +503,25 @@ def render_message_with_download(role: str, content: Any, key_prefix: str):
             
             st.markdown("### 🔬 分析结果可视化")
             
-            # 查找 Li deformation 文件
+            # 查找 Li deformation 文件和 ESP 文件
             li_deform_files = find_li_deformation_files(infer_dir)
+            esp_files = find_esp_files(infer_dir)
+            has_esp = esp_files.get('density') and esp_files.get('esp')
             
-            # 根据是否有 Li deformation 文件决定 tab 数量
+            # 根据可用文件决定 tab 数量
+            tab_names = ["🧬 团簇结构", "🔵 HOMO 轨道", "🟢 LUMO 轨道"]
+            if has_esp:
+                tab_names.append("⚡ 静电势 (ESP)")
             if li_deform_files:
-                tab_structure, tab_homo, tab_lumo, tab_li_deform = st.tabs([
-                    "🧬 团簇结构", "🔵 HOMO 轨道", "🟢 LUMO 轨道", "💠 Li Deformation"
-                ])
-            else:
-                tab_structure, tab_homo, tab_lumo = st.tabs([
-                    "🧬 团簇结构", "🔵 HOMO 轨道", "🟢 LUMO 轨道"
-                ])
-                tab_li_deform = None
+                tab_names.append("💠 Li Deformation")
+            
+            tabs = st.tabs(tab_names)
+            tab_idx = 0
+            tab_structure = tabs[tab_idx]; tab_idx += 1
+            tab_homo = tabs[tab_idx]; tab_idx += 1
+            tab_lumo = tabs[tab_idx]; tab_idx += 1
+            tab_esp = tabs[tab_idx] if has_esp else None; tab_idx += (1 if has_esp else 0)
+            tab_li_deform = tabs[tab_idx] if li_deform_files else None
             
             with tab_structure:
                 if os.path.exists(db_path):
@@ -603,6 +611,75 @@ def render_message_with_download(role: str, content: Any, key_prefix: str):
                         st.error(f"LUMO 可视化失败: {e}")
                 else:
                     st.info("LUMO 轨道文件未生成或不可用")
+            
+            # ESP (静电势) Tab
+            if tab_esp is not None and has_esp:
+                with tab_esp:
+                    try:
+                        st.markdown("**静电势 (ESP) 可视化**")
+                        st.caption("展示分子表面静电势分布：红色为正（亲核区域），蓝色为负（亲电区域）")
+                        
+                        # 等值面控制
+                        col1, col2 = st.columns([3, 1])
+                        with col1:
+                            esp_iso_scale = st.slider(
+                                "等值面比例",
+                                min_value=0.1,
+                                max_value=1.0,
+                                value=0.5,
+                                step=0.1,
+                                format="%.1f",
+                                key=f"{key_prefix}_esp_iso_scale",
+                                help="调整 ESP 等值面的显示阈值（相对于色阶范围的比例）"
+                            )
+                        with col2:
+                            st.metric("比例", f"{esp_iso_scale:.1f}")
+                        
+                        # 色阶范围（原子单位）
+                        esp_colorscale_max = 0.03  # 默认范围
+                        
+                        esp_html = create_esp_viewer(
+                            esp_files['density'],
+                            esp_files['esp'],
+                            esp_files.get('info'),
+                            width=650,
+                            height=500,
+                            esp_colorscale_min=-esp_colorscale_max,
+                            esp_colorscale_max=esp_colorscale_max,
+                        )
+                        components.html(esp_html, height=600, scrolling=False)
+                        
+                        # 显示文件信息
+                        st.caption(f"密度文件: {os.path.basename(esp_files['density'])}")
+                        st.caption(f"ESP文件: {os.path.basename(esp_files['esp'])}")
+                        
+                        # 如果有 ESP info，显示极值信息
+                        if esp_files.get('info') and os.path.exists(esp_files['info']):
+                            try:
+                                import json as json_module
+                                with open(esp_files['info'], 'r') as f:
+                                    esp_info = json_module.load(f)
+                                
+                                st.markdown("---")
+                                st.markdown("**ESP 极值信息**")
+                                col_max, col_min = st.columns(2)
+                                with col_max:
+                                    max_val = esp_info.get('ESP_max_eV', 'N/A')
+                                    max_loc = esp_info.get('ESP_max_location_Ang', [])
+                                    st.metric("最大值 (eV)", f"{max_val:.4f}" if isinstance(max_val, (int, float)) else max_val)
+                                    if max_loc:
+                                        st.caption(f"位置: ({max_loc[0]:.2f}, {max_loc[1]:.2f}, {max_loc[2]:.2f}) Å")
+                                with col_min:
+                                    min_val = esp_info.get('ESP_min_eV', 'N/A')
+                                    min_loc = esp_info.get('ESP_min_location_Ang', [])
+                                    st.metric("最小值 (eV)", f"{min_val:.4f}" if isinstance(min_val, (int, float)) else min_val)
+                                    if min_loc:
+                                        st.caption(f"位置: ({min_loc[0]:.2f}, {min_loc[1]:.2f}, {min_loc[2]:.2f}) Å")
+                            except Exception:
+                                pass
+                                
+                    except Exception as e:
+                        st.error(f"ESP 可视化失败: {e}")
             
             # Li Deformation Tab
             if tab_li_deform is not None and li_deform_files:

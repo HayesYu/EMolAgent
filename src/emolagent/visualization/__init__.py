@@ -14,6 +14,10 @@ from emolagent.visualization.mol_viewer import (
     create_li_deformation_viewer,
     create_analysis_visualization_html,
     atoms_to_xyz_string,
+    find_esp_files,
+    load_esp_info,
+    create_esp_viewer,
+    create_esp_viewer_fallback,
     ELEMENT_COLORS,
     ELEMENT_RADII,
 )
@@ -28,6 +32,10 @@ __all__ = [
     "create_li_deformation_viewer",
     "create_analysis_visualization_html",
     "atoms_to_xyz_string",
+    "find_esp_files",
+    "load_esp_info",
+    "create_esp_viewer",
+    "create_esp_viewer_fallback",
     "ELEMENT_COLORS",
     "ELEMENT_RADII",
 ]
