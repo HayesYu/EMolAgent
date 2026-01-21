@@ -917,10 +917,13 @@ def create_esp_viewer(
             }
         )
         
-        # 创建色阶条 HTML
+        # 创建色阶条 HTML (转换为 eV 单位)
+        HARTREE_TO_EV = 27.2114
+        esp_min_ev = esp_colorscale_min * HARTREE_TO_EV
+        esp_max_ev = esp_colorscale_max * HARTREE_TO_EV
         colorbar_html = f"""
         <div style="display: flex; align-items: center; justify-content: center; margin-top: 5px;">
-            <span style="color: #4444FF; font-size: 11px;">{esp_colorscale_min:.3f}</span>
+            <span style="color: #4444FF; font-size: 11px;">{esp_min_ev:.2f}</span>
             <div style="
                 width: 150px; 
                 height: 12px; 
@@ -928,8 +931,8 @@ def create_esp_viewer(
                 background: linear-gradient(to right, #0000FF, #FFFFFF, #FF0000);
                 border-radius: 2px;
             "></div>
-            <span style="color: #FF4444; font-size: 11px;">{esp_colorscale_max:.3f}</span>
-            <span style="color: #888; font-size: 10px; margin-left: 5px;">(a.u.)</span>
+            <span style="color: #FF4444; font-size: 11px;">{esp_max_ev:.2f}</span>
+            <span style="color: #888; font-size: 10px; margin-left: 5px;">(eV)</span>
         </div>
         """
         

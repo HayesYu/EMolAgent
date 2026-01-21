@@ -619,24 +619,25 @@ def render_message_with_download(role: str, content: Any, key_prefix: str):
                         st.markdown("**静电势 (ESP) 可视化**")
                         st.caption("展示分子表面静电势分布：红色为正（亲核区域），蓝色为负（亲电区域）")
                         
-                        # 等值面控制
+                        # 色阶范围控制 (eV)
                         col1, col2 = st.columns([3, 1])
                         with col1:
-                            esp_iso_scale = st.slider(
-                                "等值面比例",
-                                min_value=0.1,
-                                max_value=1.0,
-                                value=0.5,
+                            esp_range_ev = st.slider(
+                                "色阶范围 (eV)",
+                                min_value=0.2,
+                                max_value=3.0,
+                                value=0.82,  # 默认 0.03 a.u. ≈ 0.82 eV
                                 step=0.1,
-                                format="%.1f",
-                                key=f"{key_prefix}_esp_iso_scale",
-                                help="调整 ESP 等值面的显示阈值（相对于色阶范围的比例）"
+                                format="%.2f",
+                                key=f"{key_prefix}_esp_range",
+                                help="调整 ESP 色阶的显示范围，超出范围的值会被截断到边界颜色"
                             )
                         with col2:
-                            st.metric("比例", f"{esp_iso_scale:.1f}")
+                            st.metric("±范围", f"{esp_range_ev:.2f} eV")
                         
-                        # 色阶范围（原子单位）
-                        esp_colorscale_max = 0.03  # 默认范围
+                        # 转换为原子单位 (a.u.)
+                        HARTREE_TO_EV = 27.2114
+                        esp_colorscale_max = esp_range_ev / HARTREE_TO_EV
                         
                         esp_html = create_esp_viewer(
                             esp_files['density'],
