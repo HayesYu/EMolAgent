@@ -262,6 +262,156 @@ def find_orbital_files(inference_dir: str) -> Dict[str, Optional[str]]:
     return result
 
 
+def find_li_deformation_files(inference_dir: str) -> List[Dict[str, str]]:
+    """
+    在推断结果目录中查找 Li deformation surface PDB 文件。
+    
+    文件名格式: Li_infer_{id}_diff{isovalue}_surface.pdb
+    
+    Returns:
+        包含 'path', 'id', 'isovalue' 键的字典列表
+    """
+    result: List[Dict[str, str]] = []
+    
+    if not os.path.exists(inference_dir):
+        return result
+    
+    search_patterns = [
+        os.path.join(inference_dir, "results", "*", "Li_*_surface.pdb"),
+        os.path.join(inference_dir, "*", "Li_*_surface.pdb"),
+        os.path.join(inference_dir, "Li_*_surface.pdb"),
+    ]
+    
+    found_files = set()
+    for pattern in search_patterns:
+        matches = glob.glob(pattern)
+        for match in matches:
+            if match not in found_files:
+                found_files.add(match)
+                basename = os.path.basename(match)
+                # 解析文件名: Li_infer_1_diff0p09_surface.pdb
+                import re
+                m = re.match(r'Li_(\w+)_(\d+)_diff(\w+)_surface\.pdb', basename)
+                if m:
+                    result.append({
+                        'path': match,
+                        'type': m.group(1),  # infer/pred/target
+                        'id': m.group(2),
+                        'isovalue': m.group(3).replace('p', '.'),  # 0p09 -> 0.09
+                    })
+    
+    # 按 id 排序
+    result.sort(key=lambda x: int(x.get('id', 0)))
+    return result
+
+
+def create_li_deformation_viewer(
+    molecule_path: str,
+    surface_pdb_path: str,
+    width: int = 600,
+    height: int = 500,
+    surface_color: str = "#4A90D9",
+    surface_opacity: float = 0.65,
+    background_color: str = "#1a1a2e",
+    isovalue: str = "0.09",
+) -> str:
+    """
+    创建 Li deformation factor 可视化查看器。
+    
+    将点云 PDB 渲染为半透明表面，叠加在分子结构上，
+    用于展示 Li 离子周围的电子变形分布。
+    
+    Args:
+        molecule_path: 分子结构文件路径 (xyz 或 pdb)
+        surface_pdb_path: Li deformation 点云 PDB 文件路径
+        width: 查看器宽度
+        height: 查看器高度
+        surface_color: 表面颜色（默认冷蓝色）
+        surface_opacity: 表面透明度
+        background_color: 背景颜色
+        isovalue: 等值面值（用于显示）
+        
+    Returns:
+        包含交互式 3D 查看器的 HTML 字符串
+    """
+    # 检查文件是否存在
+    if not os.path.exists(molecule_path):
+        return f"<p style='color: red;'>分子结构文件不存在: {molecule_path}</p>"
+    if not os.path.exists(surface_pdb_path):
+        return f"<p style='color: red;'>表面点云文件不存在: {surface_pdb_path}</p>"
+    
+    try:
+        # 1. 读取分子结构
+        mol_ext = os.path.splitext(molecule_path)[1].lower()
+        with open(molecule_path, 'r') as f:
+            mol_content = f.read()
+        
+        # 确定分子文件格式
+        if mol_ext == '.xyz':
+            mol_format = 'xyz'
+        elif mol_ext == '.pdb':
+            mol_format = 'pdb'
+        else:
+            # 尝试自动检测
+            mol_format = 'xyz' if mol_content.strip().split('\n')[0].strip().isdigit() else 'pdb'
+        
+        # 2. 读取表面点云 PDB
+        with open(surface_pdb_path, 'r') as f:
+            surface_content = f.read()
+        
+        # 3. 创建 py3Dmol 视图
+        viewer = py3Dmol.view(width=width, height=height)
+        
+        # 4. 添加分子骨架 (Model 0)
+        viewer.addModel(mol_content, mol_format)
+        viewer.setStyle({'model': 0}, {
+            'sphere': {'colorscheme': 'Jmol', 'scale': 0.25},
+            'stick': {'radius': 0.12, 'colorscheme': 'Jmol'}
+        })
+        
+        # 5. 添加点云并渲染为表面 (Model 1)
+        viewer.addModel(surface_content, 'pdb')
+        # 隐藏点云本身的原子显示
+        viewer.setStyle({'model': 1}, {'sphere': {'scale': 0}})
+        
+        # 6. 为点云添加 VDW 表面（近似 QuickSurf 效果）
+        # py3Dmol 的 addSurface 支持: VDW, MS (分子表面), SAS, SES
+        viewer.addSurface(
+            'VDW',
+            {
+                'opacity': surface_opacity,
+                'color': surface_color,
+            },
+            {'model': 1}
+        )
+        
+        # 7. 设置背景和视图
+        viewer.setBackgroundColor(background_color)
+        viewer.zoomTo()
+        
+        # 8. 生成 HTML
+        html = viewer._make_html()
+        
+        wrapper_html = f"""
+        <div style="border: 2px solid #4a4a6a; border-radius: 8px; padding: 10px; background: #0d0d1a;">
+            <div style="color: #aaa; font-size: 12px; margin-bottom: 5px; text-align: center;">
+                🖱️ 左键拖动旋转 | 滚轮缩放 | 右键平移
+            </div>
+            {html}
+            <div style="color: #888; font-size: 11px; margin-top: 5px; text-align: center;">
+                Li Deformation Factor | 等值面: {isovalue} &nbsp;
+                <span style="display: inline-block; width: 12px; height: 12px; background: {surface_color}; border-radius: 2px; vertical-align: middle;"></span>
+                <span style="color: {surface_color};"> 变形区域</span>
+            </div>
+        </div>
+        """
+        
+        return wrapper_html
+        
+    except Exception as e:
+        return f"<p style='color: red;'>加载 Li Deformation 可视化失败: {e}</p>"
+
+
 def create_structure_preview_html(db_path: str, max_structures: int = 3) -> str:
     """为数据库中的结构创建 HTML 预览。"""
     if not os.path.exists(db_path):

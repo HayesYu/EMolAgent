@@ -46,6 +46,8 @@ from emolagent.visualization import (
     create_gaussian_view_style_viewer,
     create_orbital_viewer,
     find_orbital_files,
+    find_li_deformation_files,
+    create_li_deformation_viewer,
     create_analysis_visualization_html
 )
 import streamlit.components.v1 as components
@@ -499,7 +501,19 @@ def render_message_with_download(role: str, content: Any, key_prefix: str):
             
             st.markdown("### 🔬 分析结果可视化")
             
-            tab_structure, tab_homo, tab_lumo = st.tabs(["🧬 团簇结构", "🔵 HOMO 轨道", "🟢 LUMO 轨道"])
+            # 查找 Li deformation 文件
+            li_deform_files = find_li_deformation_files(infer_dir)
+            
+            # 根据是否有 Li deformation 文件决定 tab 数量
+            if li_deform_files:
+                tab_structure, tab_homo, tab_lumo, tab_li_deform = st.tabs([
+                    "🧬 团簇结构", "🔵 HOMO 轨道", "🟢 LUMO 轨道", "💠 Li Deformation"
+                ])
+            else:
+                tab_structure, tab_homo, tab_lumo = st.tabs([
+                    "🧬 团簇结构", "🔵 HOMO 轨道", "🟢 LUMO 轨道"
+                ])
+                tab_li_deform = None
             
             with tab_structure:
                 if os.path.exists(db_path):
@@ -589,6 +603,78 @@ def render_message_with_download(role: str, content: Any, key_prefix: str):
                         st.error(f"LUMO 可视化失败: {e}")
                 else:
                     st.info("LUMO 轨道文件未生成或不可用")
+            
+            # Li Deformation Tab
+            if tab_li_deform is not None and li_deform_files:
+                with tab_li_deform:
+                    try:
+                        st.markdown("**Li 离子变形因子可视化**")
+                        st.caption("展示 Li 离子周围电子密度变形的等值面分布")
+                        
+                        # 查找对应的分子结构 xyz 文件
+                        # 优先从 task 目录的 xyz_all 中查找
+                        task_dir = os.path.dirname(os.path.dirname(infer_dir))
+                        xyz_all_dir = os.path.join(task_dir, "xyz_all")
+                        molecule_path = None
+                        
+                        if os.path.exists(xyz_all_dir):
+                            import glob as glob_module
+                            xyz_files = glob_module.glob(os.path.join(xyz_all_dir, "*.xyz"))
+                            if xyz_files:
+                                molecule_path = xyz_files[0]  # 取第一个
+                        
+                        # 如果找不到 xyz，尝试从 db 导出
+                        if molecule_path is None and os.path.exists(db_path):
+                            from emolagent.visualization import atoms_to_xyz_string
+                            atoms = load_structure_from_db(db_path)
+                            if atoms:
+                                # 创建临时 xyz 文件
+                                temp_xyz_path = os.path.join(infer_dir, "temp_molecule.xyz")
+                                with open(temp_xyz_path, 'w') as f:
+                                    f.write(atoms_to_xyz_string(atoms, "Generated for Li Deformation visualization"))
+                                molecule_path = temp_xyz_path
+                        
+                        if molecule_path is None:
+                            st.warning("未找到分子结构文件，无法叠加显示")
+                        else:
+                            # 透明度控制
+                            col1, col2 = st.columns([3, 1])
+                            with col1:
+                                opacity = st.slider(
+                                    "表面透明度",
+                                    min_value=0.1,
+                                    max_value=1.0,
+                                    value=0.65,
+                                    step=0.05,
+                                    format="%.2f",
+                                    key=f"{key_prefix}_li_deform_opacity",
+                                    help="调整 Li deformation 表面的透明度"
+                                )
+                            with col2:
+                                st.metric("透明度", f"{opacity:.2f}")
+                            
+                            # 显示第一个 Li deformation 文件
+                            li_file = li_deform_files[0]
+                            
+                            li_deform_html = create_li_deformation_viewer(
+                                molecule_path=molecule_path,
+                                surface_pdb_path=li_file['path'],
+                                width=650,
+                                height=500,
+                                surface_opacity=opacity,
+                                isovalue=li_file.get('isovalue', '0.09'),
+                            )
+                            components.html(li_deform_html, height=560, scrolling=False)
+                            st.caption(f"文件: {os.path.basename(li_file['path'])} | 等值面: {li_file.get('isovalue', 'N/A')}")
+                            
+                            # 如果有多个文件，显示选择器
+                            if len(li_deform_files) > 1:
+                                st.markdown("---")
+                                st.markdown("**其他 Li Deformation 文件:**")
+                                for i, lf in enumerate(li_deform_files[1:], 1):
+                                    st.text(f"  {i}. {os.path.basename(lf['path'])} (isovalue: {lf.get('isovalue', 'N/A')})")
+                    except Exception as e:
+                        st.error(f"Li Deformation 可视化失败: {e}")
 
         elif structure_match:
             db_path = structure_match.group(1).strip()
