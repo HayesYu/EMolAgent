@@ -23,6 +23,7 @@ from emolagent.database import db
 from emolagent.core.tools import (
     search_molecule_in_db,
     build_and_optimize_cluster,
+    build_multiple_clusters,
     run_dm_infer_pipeline,
     compress_directory,
 )
@@ -42,7 +43,9 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 
 from emolagent.visualization import (
     create_structure_preview_html, 
-    load_structure_from_db, 
+    load_structure_from_db,
+    load_all_structures_from_db,
+    get_structure_count_from_db,
     create_gaussian_view_style_viewer,
     create_orbital_viewer,
     find_orbital_files,
@@ -80,38 +83,71 @@ CUSTOM_SYSTEM_PREFIX = """
 请遵循以下工作流来处理用户的分子计算请求：
 
 ### 重要：识别用户意图
-- **只生成结构**：当用户说"生成一个结构"、"构建一个团簇"、"创建分子结构"等，**只调用** `Build_Structure_Only`，不要执行电子结构分析
-- **生成并分析**：当用户明确说"生成并分析"、"计算电子结构"、"预测性质"等，才执行完整流程（包括 `Run_Inference_Pipeline`）
-- **对已有结构分析**：当用户说"对上面的结构进行分析"、"分析刚才生成的结构"等，从对话历史中找到之前生成的 `optimized_db` 路径，然后调用 `Run_Inference_Pipeline`
+用户意图可以分为以下几类，请仔细判断：
+
+1. **只生成结构（不分析）**：
+   - 关键词：「生成结构」「构建团簇」「创建分子」
+   - **不包含**：「分析」「电子结构」「预测性质」「HOMO」「LUMO」等
+   - 操作：只调用构建工具，**不要调用** `Run_Inference_Pipeline`
+
+2. **生成并分析（完整流程）**：
+   - 关键词：「生成并分析」「计算电子结构」「预测性质」「进行分析」「电子结构分析」
+   - 操作：调用构建工具 + `Run_Inference_Pipeline`
+
+3. **对已有结构进行分析**：
+   - 关键词：「对上面的结构进行分析」「分析刚才的结构」「继续分析」
+   - 操作：从对话历史找到 `optimized_db` 路径，只调用 `Run_Inference_Pipeline`
+
+### ⚠️ 关键：单配方 vs 多配方
+- **单配方**：用户只描述了一种配方（如"1Li+3DME+1FSI"）
+  - 只生成结构：`Build_Structure_Only`
+  - 生成并分析：`Build_and_Optimize` + `Run_Inference_Pipeline`
+
+- **多配方**：用户描述了多种不同配方（如"构建A配方...然后构建B配方..."）
+  - **必须**使用 `Build_Multiple_Clusters` 一次性处理所有配方
+  - 只生成结构：`Build_Multiple_Clusters`（不调用 Run_Inference_Pipeline）
+  - 生成并分析：`Build_Multiple_Clusters` + `Run_Inference_Pipeline`
+
+**示例判断**：
+- 「构建 1Li+3DME+1FSI 和 1Li+2DME+2FSI 两个团簇」→ 多配方 + 只生成结构 → `Build_Multiple_Clusters`（完毕）
+- 「构建 1Li+3DME+1FSI 和 1Li+2DME+2FSI 两个团簇并进行电子结构分析」→ 多配方 + 分析 → `Build_Multiple_Clusters` + `Run_Inference_Pipeline`
+- 「构建 1Li+3DME+1FSI」→ 单配方 + 只生成结构 → `Build_Structure_Only`（完毕）
 
 ### 工作流步骤：
 
-1.  **解析需求**：识别用户想要的中心离子（如 Li）、溶剂（如 DME）和阴离子（如 FSI）及其数量。
+1.  **解析需求**：
+    * 识别中心离子、溶剂、阴离子及其数量
+    * 判断是单配方还是多配方
+    * **关键判断**：用户是否要求进行电子结构分析
 
 2.  **数据库检索 (Search_Molecule_DB)**：
-    * **优先查库**：对于提到的每个分子（溶剂或阴离子），**必须**先调用 `Search_Molecule_DB` 尝试在本地库中查找。
-    * *Solvent* 查 'solvent' 类型，*Salt/Anion* 查 'anion' 类型。
-    * **确认反馈**：如果找到了（返回了 `db_path`），告诉用户"已在库中找到 DME (构型已校准)"。如果没找到，则准备使用 SMILES（你需要自己知道或询问用户）。
+    * 对每个分子（溶剂或阴离子），先调用 `Search_Molecule_DB` 查库
+    * Solvent 查 'solvent' 类型，Anion 查 'anion' 类型
+    * 如果找到 `db_path`，告诉用户"已在库中找到 XXX"
+    * 如果没找到，使用 SMILES
 
 3.  **建模与优化**：
-    * **只生成结构时**：调用 `Build_Structure_Only`，返回结构路径和可视化预览
-    * **完整分析时**：调用 `Build_and_Optimize`（会自动进行 UMA 结构优化）
-    * 构造 JSON 参数。
-    * 如果第2步找到了 DB 路径，参数里用 `{"name": "DME", "path": "...", "count": 3}`。
-    * 如果没找到，用 `{"smiles": "...", "count": 3}`。
+    * 单配方只生成结构：`Build_Structure_Only`
+    * 单配方完整分析：`Build_and_Optimize` → `Run_Inference_Pipeline`
+    * 多配方只生成结构：`Build_Multiple_Clusters`（**到此结束，不要调用分析**）
+    * 多配方完整分析：`Build_Multiple_Clusters` → `Run_Inference_Pipeline`
+    * 构造 JSON 参数时：
+      - 有 DB 路径：`{"name": "DME", "path": "...", "count": 3}`
+      - 无 DB 路径：`{"smiles": "...", "count": 3}`
 
-4.  **电子结构推断 (Run_Inference_Pipeline)**（仅当用户需要分析时）：
-    * 使用上一步或对话历史中的 `optimized_db` 路径
-    * 执行推断并分析性质（HOMO/LUMO/Dipole等）
+4.  **电子结构推断 (Run_Inference_Pipeline)**：
+    * **仅当用户明确要求分析时才调用**
+    * 使用上一步返回的 `optimized_db` 路径
+    * 对于多配方，只需调用一次，会处理所有结构
 
 5.  **最终报告**：
-    * 如果只是生成结构：展示 3D 预览，告知用户可以后续进行分析
-    * 如果执行了分析：展示电子性质，**必须保留** `[[DOWNLOAD:...]]` 链接
+    * 只生成结构：展示 3D 预览，提示用户可后续分析
+    * 执行了分析：展示电子性质，保留 `[[DOWNLOAD:...]]` 链接
 
 ### 记住：
-- 用户说"生成结构"≠ 需要电子结构分析
-- 用户说"分析上面的结构"时，从之前的对话历史中查找 `optimized_db` 路径
-- 确保结构路径被正确记录，以便后续分析使用
+- 用户没说「分析」「电子结构」→ 不要调用 `Run_Inference_Pipeline`
+- 用户后续说「分析上面的结构」→ 从历史找 `optimized_db`，调用 `Run_Inference_Pipeline`
+- 多配方 = 使用 `Build_Multiple_Clusters`，不要多次调用单配方工具
 
 ## 能力二：文献知识问答 (Search_Knowledge_Base)
 当用户询问以下类型的问题时，使用 `Search_Knowledge_Base` 工具：
@@ -132,7 +168,6 @@ CUSTOM_SYSTEM_PREFIX = """
 * FSI 通常是阴离子。
 * 一步步执行，不要跳过"查库"步骤，因为库内构型质量最高。
 * 对于知识性问题，优先使用知识库搜索，确保回答有文献依据。
-* **关键**：当用户后续说"对上面生成的结构进行分析"时，请从之前的对话中找到 optimized_db 的路径，并调用 Run_Inference_Pipeline。
 """
 
 # --- 页面配置 ---
@@ -238,7 +273,7 @@ def tool_build_optimize(ion_name: str, solvents_json: str, anions_json: str, run
     "Build_Structure_Only",
     description=(
         "Build and optimize a molecular cluster structure WITHOUT running electronic structure analysis. "
-        "Use this when user just wants to generate/build a structure. "
+        "Use this when user just wants to generate/build a SINGLE structure. "
         "Args: ion_name (str), solvents_json (JSON list), anions_json (JSON list). "
         "Returns the optimized structure path and a 3D visualization for user confirmation."
     ),
@@ -266,6 +301,51 @@ def tool_build_structure_only(ion_name: str, solvents_json: str, anions_json: st
                 "optimized_db": optimized_db,
                 "task_dir": task_dir,
                 "msg": f"结构已生成并优化完成。路径: {optimized_db}",
+                "visualization_marker": f"[[STRUCTURE_PREVIEW:{optimized_db}]]"
+            })
+        return result
+    except:
+        return result
+
+
+@tool(
+    "Build_Multiple_Clusters",
+    description=(
+        "Build MULTIPLE clusters with DIFFERENT recipes in ONE call. "
+        "USE THIS when user requests multiple different cluster configurations in a single request. "
+        "For example: 'build 1Li+3DME+1FSI AND 1Li+2DME+2FSI' should use this tool ONCE, not Build_and_Optimize twice. "
+        "Args: ion_name (str), recipes_json (JSON list of recipes). "
+        "Each recipe: {'solvents': [{'name': 'DME', 'path': '...', 'count': 3}], 'anions': [{'name': 'FSI', 'path': '...', 'count': 1}]}. "
+        "Returns the optimized DB path containing ALL clusters."
+    ),
+)
+def tool_build_multiple_clusters(ion_name: str, recipes_json: str, runtime: ToolRuntime[Context]) -> str:
+    """批量构建多个不同配方的团簇。"""
+    try:
+        recipes = json.loads(recipes_json) if recipes_json else []
+    except Exception:
+        return json.dumps({"success": False, "msg": "Error parsing recipes_json."})
+
+    if not recipes or len(recipes) == 0:
+        return json.dumps({"success": False, "msg": "No recipes provided."})
+
+    user_ws = get_user_workspace_from_ids(runtime.context.username, runtime.context.chat_id)
+    task_id = f"{time.strftime('%Y%m%d_%H%M%S')}_{time.time_ns()}"
+    task_dir = os.path.join(user_ws, f"task_{task_id}")
+    
+    result = build_multiple_clusters(ion_name, recipes, task_dir)
+    
+    try:
+        res_dict = json.loads(result)
+        if res_dict.get("success"):
+            optimized_db = res_dict.get("optimized_db")
+            recipes_count = res_dict.get("recipes_count", len(recipes))
+            return json.dumps({
+                "success": True,
+                "optimized_db": optimized_db,
+                "task_dir": task_dir,
+                "recipes_count": recipes_count,
+                "msg": f"成功构建 {recipes_count} 个配方的团簇。路径: {optimized_db}",
                 "visualization_marker": f"[[STRUCTURE_PREVIEW:{optimized_db}]]"
             })
         return result
@@ -359,7 +439,7 @@ def tool_search_knowledge(query: str, top_k: int = 5) -> str:
         return f"知识库搜索出错: {str(e)}"
 
 
-TOOLS = [tool_search_db, tool_build_structure_only, tool_build_optimize, tool_infer_pipeline, tool_search_knowledge]
+TOOLS = [tool_search_db, tool_build_structure_only, tool_build_multiple_clusters, tool_build_optimize, tool_infer_pipeline, tool_search_knowledge]
 
 
 # ==============================================================================
@@ -483,6 +563,32 @@ def normalize_chat_content(content: Any) -> str:
     return str(content)
 
 
+def _show_esp_info(info_path: str):
+    """显示 ESP 极值信息的辅助函数。"""
+    try:
+        import json as json_module
+        with open(info_path, 'r') as f:
+            esp_info = json_module.load(f)
+        
+        st.markdown("---")
+        st.markdown("**ESP 极值信息**")
+        col_max, col_min = st.columns(2)
+        with col_max:
+            max_val = esp_info.get('ESP_max_eV', 'N/A')
+            max_loc = esp_info.get('ESP_max_location_Ang', [])
+            st.metric("最大值 (eV)", f"{max_val:.4f}" if isinstance(max_val, (int, float)) else max_val)
+            if max_loc:
+                st.caption(f"位置: ({max_loc[0]:.2f}, {max_loc[1]:.2f}, {max_loc[2]:.2f}) Å")
+        with col_min:
+            min_val = esp_info.get('ESP_min_eV', 'N/A')
+            min_loc = esp_info.get('ESP_min_location_Ang', [])
+            st.metric("最小值 (eV)", f"{min_val:.4f}" if isinstance(min_val, (int, float)) else min_val)
+            if min_loc:
+                st.caption(f"位置: ({min_loc[0]:.2f}, {min_loc[1]:.2f}, {min_loc[2]:.2f}) Å")
+    except Exception:
+        pass
+
+
 def render_message_with_download(role: str, content: Any, key_prefix: str):
     """将特殊标记渲染为可交互组件。"""
     text = normalize_chat_content(content)
@@ -505,11 +611,20 @@ def render_message_with_download(role: str, content: Any, key_prefix: str):
             
             # 查找 Li deformation 文件和 ESP 文件
             li_deform_files = find_li_deformation_files(infer_dir)
-            esp_files = find_esp_files(infer_dir)
-            has_esp = esp_files.get('density') and esp_files.get('esp')
+            esp_files_list = find_esp_files(infer_dir)
+            has_esp = len(esp_files_list) > 0
+            
+            # 查找轨道文件
+            orbital_files = find_orbital_files(infer_dir)
+            has_homo = len(orbital_files.get('homo', [])) > 0
+            has_lumo = len(orbital_files.get('lumo', [])) > 0
             
             # 根据可用文件决定 tab 数量
-            tab_names = ["🧬 团簇结构", "🔵 HOMO 轨道", "🟢 LUMO 轨道"]
+            tab_names = ["🧬 团簇结构"]
+            if has_homo:
+                tab_names.append("🔵 HOMO 轨道")
+            if has_lumo:
+                tab_names.append("🟢 LUMO 轨道")
             if has_esp:
                 tab_names.append("⚡ 静电势 (ESP)")
             if li_deform_files:
@@ -518,37 +633,123 @@ def render_message_with_download(role: str, content: Any, key_prefix: str):
             tabs = st.tabs(tab_names)
             tab_idx = 0
             tab_structure = tabs[tab_idx]; tab_idx += 1
-            tab_homo = tabs[tab_idx]; tab_idx += 1
-            tab_lumo = tabs[tab_idx]; tab_idx += 1
+            tab_homo = tabs[tab_idx] if has_homo else None; tab_idx += (1 if has_homo else 0)
+            tab_lumo = tabs[tab_idx] if has_lumo else None; tab_idx += (1 if has_lumo else 0)
             tab_esp = tabs[tab_idx] if has_esp else None; tab_idx += (1 if has_esp else 0)
             tab_li_deform = tabs[tab_idx] if li_deform_files else None
+            
+            # 预加载结构信息，用于生成一致的标签
+            structure_labels = {}  # id -> label 映射
+            structures_data = []   # 保存结构数据供复用
+            if os.path.exists(db_path):
+                try:
+                    structures_data = load_all_structures_from_db(db_path, max_count=20)
+                    for i, (atoms, meta) in enumerate(structures_data):
+                        solv_name = meta.get('solvent_name', '')
+                        anion_name = meta.get('anion_name', '')
+                        n_solv = meta.get('n_solv', 0)
+                        n_anion = meta.get('n_anion', 0)
+                        category = meta.get('category', '')
+                        
+                        if anion_name and n_anion > 0:
+                            label = f"{n_solv}{solv_name}+{n_anion}{anion_name}"
+                        else:
+                            label = f"{n_solv}{solv_name}"
+                        if category:
+                            label = f"[{category}] {label}"
+                        structure_labels[str(i)] = label
+                except Exception:
+                    pass
+            
+            def get_structure_label(file_id: str, index: int) -> str:
+                """根据文件 ID 获取结构标签。"""
+                if file_id in structure_labels:
+                    return structure_labels[file_id]
+                # 尝试用 index 查找
+                if str(index) in structure_labels:
+                    return structure_labels[str(index)]
+                return f"结构{file_id}"
             
             with tab_structure:
                 if os.path.exists(db_path):
                     try:
-                        atoms = load_structure_from_db(db_path)
-                        if atoms:
-                            viewer_html = create_gaussian_view_style_viewer(
-                                atoms,
-                                width=650,
-                                height=500,
-                                style="sphere+stick",
-                                add_lighting=True
-                            )
-                            components.html(viewer_html, height=560, scrolling=False)
-                            st.caption(f"化学式: {atoms.get_chemical_formula()} | 原子数: {len(atoms)}")
+                        total_count = len(structures_data) if structures_data else get_structure_count_from_db(db_path)
+                        max_display = 3  # 最多显示 3 个结构
+                        
+                        if total_count <= 1:
+                            # 单个结构
+                            if structures_data:
+                                atoms, meta = structures_data[0]
+                            else:
+                                atoms = load_structure_from_db(db_path)
+                                meta = {}
+                            if atoms:
+                                viewer_html = create_gaussian_view_style_viewer(
+                                    atoms,
+                                    width=650,
+                                    height=500,
+                                    style="sphere+stick",
+                                    add_lighting=True
+                                )
+                                components.html(viewer_html, height=560, scrolling=False)
+                                st.caption(f"化学式: {atoms.get_chemical_formula()} | 原子数: {len(atoms)}")
+                            else:
+                                st.warning("无法加载结构预览")
                         else:
-                            st.warning("无法加载结构预览")
+                            # 多个结构
+                            displayed_count = min(total_count, max_display)
+                            st.markdown(f"**共 {total_count} 个团簇，显示前 {displayed_count} 个**")
+                            
+                            structures_to_show = structures_data[:max_display]
+                            
+                            if structures_to_show:
+                                # 生成子 tab 名称，复用 structure_labels
+                                sub_tab_names = [f"#{i+1}: {structure_labels.get(str(i), f'结构{i}')}" 
+                                                 for i in range(len(structures_to_show))]
+                                
+                                sub_tabs = st.tabs(sub_tab_names)
+                                
+                                for i, (sub_tab, (atoms, meta)) in enumerate(zip(sub_tabs, structures_to_show)):
+                                    with sub_tab:
+                                        viewer_html = create_gaussian_view_style_viewer(
+                                            atoms,
+                                            width=650,
+                                            height=450,
+                                            style="sphere+stick",
+                                            add_lighting=True
+                                        )
+                                        components.html(viewer_html, height=510, scrolling=False)
+                                        
+                                        # 显示配方信息
+                                        solv_name = meta.get('solvent_name', 'Unknown')
+                                        anion_name = meta.get('anion_name', '')
+                                        n_solv = meta.get('n_solv', 0)
+                                        n_anion = meta.get('n_anion', 0)
+                                        ion = meta.get('ion', 'Li')
+                                        
+                                        formula_parts = [f"1x{ion}⁺"]
+                                        if n_solv > 0:
+                                            formula_parts.append(f"{n_solv}x{solv_name}")
+                                        if n_anion > 0 and anion_name:
+                                            formula_parts.append(f"{n_anion}x{anion_name}⁻")
+                                        
+                                        st.caption(f"配方: {' + '.join(formula_parts)} | 化学式: {atoms.get_chemical_formula()} | 原子数: {len(atoms)}")
+                                
+                                if total_count > max_display:
+                                    st.info(f"💡 还有 {total_count - max_display} 个团簇未显示。完整结果请下载分析包查看。")
+                            else:
+                                st.warning("无法加载结构预览")
                     except Exception as e:
                         st.error(f"结构预览失败: {e}")
                 else:
                     st.warning(f"结构文件不存在: {db_path}")
             
-            orbital_files = find_orbital_files(infer_dir)
-            
-            with tab_homo:
-                if orbital_files.get('homo') and os.path.exists(orbital_files['homo']):
+            # HOMO Tab
+            if tab_homo is not None and has_homo:
+                with tab_homo:
+                    homo_files = orbital_files.get('homo', [])
                     try:
+                        # 等值面设置
                         st.markdown("**等值面设置**")
                         col1, col2 = st.columns([3, 1])
                         with col1:
@@ -565,23 +766,43 @@ def render_message_with_download(role: str, content: Any, key_prefix: str):
                         with col2:
                             st.metric("当前值", f"{homo_iso:.3f}")
                         
-                        homo_html = create_orbital_viewer(
-                            orbital_files['homo'],
-                            width=650,
-                            height=500,
-                            iso_value=homo_iso,
-                            orbital_type="HOMO"
-                        )
-                        components.html(homo_html, height=560, scrolling=False)
-                        st.caption(f"文件: {os.path.basename(orbital_files['homo'])}")
+                        if len(homo_files) == 1:
+                            # 单个文件
+                            homo_html = create_orbital_viewer(
+                                homo_files[0]['path'],
+                                width=650,
+                                height=500,
+                                iso_value=homo_iso,
+                                orbital_type="HOMO"
+                            )
+                            components.html(homo_html, height=560, scrolling=False)
+                            st.caption(f"文件: {os.path.basename(homo_files[0]['path'])}")
+                        else:
+                            # 多个文件，使用 tabs 切换
+                            st.markdown(f"**共 {len(homo_files)} 个 HOMO 轨道文件**")
+                            homo_tab_names = [f"#{i+1}: {get_structure_label(f['id'], i)}" for i, f in enumerate(homo_files)]
+                            homo_sub_tabs = st.tabs(homo_tab_names)
+                            
+                            for i, (sub_tab, homo_file) in enumerate(zip(homo_sub_tabs, homo_files)):
+                                with sub_tab:
+                                    homo_html = create_orbital_viewer(
+                                        homo_file['path'],
+                                        width=650,
+                                        height=450,
+                                        iso_value=homo_iso,
+                                        orbital_type="HOMO"
+                                    )
+                                    components.html(homo_html, height=510, scrolling=False)
+                                    st.caption(f"文件: {os.path.basename(homo_file['path'])}")
                     except Exception as e:
                         st.error(f"HOMO 可视化失败: {e}")
-                else:
-                    st.info("HOMO 轨道文件未生成或不可用")
             
-            with tab_lumo:
-                if orbital_files.get('lumo') and os.path.exists(orbital_files['lumo']):
+            # LUMO Tab
+            if tab_lumo is not None and has_lumo:
+                with tab_lumo:
+                    lumo_files = orbital_files.get('lumo', [])
                     try:
+                        # 等值面设置
                         st.markdown("**等值面设置**")
                         col1, col2 = st.columns([3, 1])
                         with col1:
@@ -598,19 +819,36 @@ def render_message_with_download(role: str, content: Any, key_prefix: str):
                         with col2:
                             st.metric("当前值", f"{lumo_iso:.3f}")
                         
-                        lumo_html = create_orbital_viewer(
-                            orbital_files['lumo'],
-                            width=650,
-                            height=500,
-                            iso_value=lumo_iso,
-                            orbital_type="LUMO"
-                        )
-                        components.html(lumo_html, height=560, scrolling=False)
-                        st.caption(f"文件: {os.path.basename(orbital_files['lumo'])}")
+                        if len(lumo_files) == 1:
+                            # 单个文件
+                            lumo_html = create_orbital_viewer(
+                                lumo_files[0]['path'],
+                                width=650,
+                                height=500,
+                                iso_value=lumo_iso,
+                                orbital_type="LUMO"
+                            )
+                            components.html(lumo_html, height=560, scrolling=False)
+                            st.caption(f"文件: {os.path.basename(lumo_files[0]['path'])}")
+                        else:
+                            # 多个文件，使用 tabs 切换
+                            st.markdown(f"**共 {len(lumo_files)} 个 LUMO 轨道文件**")
+                            lumo_tab_names = [f"#{i+1}: {get_structure_label(f['id'], i)}" for i, f in enumerate(lumo_files)]
+                            lumo_sub_tabs = st.tabs(lumo_tab_names)
+                            
+                            for i, (sub_tab, lumo_file) in enumerate(zip(lumo_sub_tabs, lumo_files)):
+                                with sub_tab:
+                                    lumo_html = create_orbital_viewer(
+                                        lumo_file['path'],
+                                        width=650,
+                                        height=450,
+                                        iso_value=lumo_iso,
+                                        orbital_type="LUMO"
+                                    )
+                                    components.html(lumo_html, height=510, scrolling=False)
+                                    st.caption(f"文件: {os.path.basename(lumo_file['path'])}")
                     except Exception as e:
                         st.error(f"LUMO 可视化失败: {e}")
-                else:
-                    st.info("LUMO 轨道文件未生成或不可用")
             
             # ESP (静电势) Tab
             if tab_esp is not None and has_esp:
@@ -639,45 +877,52 @@ def render_message_with_download(role: str, content: Any, key_prefix: str):
                         HARTREE_TO_EV = 27.2114
                         esp_colorscale_max = esp_range_ev / HARTREE_TO_EV
                         
-                        esp_html = create_esp_viewer(
-                            esp_files['density'],
-                            esp_files['esp'],
-                            esp_files.get('info'),
-                            width=650,
-                            height=500,
-                            esp_colorscale_min=-esp_colorscale_max,
-                            esp_colorscale_max=esp_colorscale_max,
-                        )
-                        components.html(esp_html, height=600, scrolling=False)
-                        
-                        # 显示文件信息
-                        st.caption(f"密度文件: {os.path.basename(esp_files['density'])}")
-                        st.caption(f"ESP文件: {os.path.basename(esp_files['esp'])}")
-                        
-                        # 如果有 ESP info，显示极值信息
-                        if esp_files.get('info') and os.path.exists(esp_files['info']):
-                            try:
-                                import json as json_module
-                                with open(esp_files['info'], 'r') as f:
-                                    esp_info = json_module.load(f)
-                                
-                                st.markdown("---")
-                                st.markdown("**ESP 极值信息**")
-                                col_max, col_min = st.columns(2)
-                                with col_max:
-                                    max_val = esp_info.get('ESP_max_eV', 'N/A')
-                                    max_loc = esp_info.get('ESP_max_location_Ang', [])
-                                    st.metric("最大值 (eV)", f"{max_val:.4f}" if isinstance(max_val, (int, float)) else max_val)
-                                    if max_loc:
-                                        st.caption(f"位置: ({max_loc[0]:.2f}, {max_loc[1]:.2f}, {max_loc[2]:.2f}) Å")
-                                with col_min:
-                                    min_val = esp_info.get('ESP_min_eV', 'N/A')
-                                    min_loc = esp_info.get('ESP_min_location_Ang', [])
-                                    st.metric("最小值 (eV)", f"{min_val:.4f}" if isinstance(min_val, (int, float)) else min_val)
-                                    if min_loc:
-                                        st.caption(f"位置: ({min_loc[0]:.2f}, {min_loc[1]:.2f}, {min_loc[2]:.2f}) Å")
-                            except Exception:
-                                pass
+                        if len(esp_files_list) == 1:
+                            # 单个 ESP 文件组
+                            esp_files = esp_files_list[0]
+                            esp_html = create_esp_viewer(
+                                esp_files['density'],
+                                esp_files['esp'],
+                                esp_files.get('info'),
+                                width=650,
+                                height=500,
+                                esp_colorscale_min=-esp_colorscale_max,
+                                esp_colorscale_max=esp_colorscale_max,
+                            )
+                            components.html(esp_html, height=600, scrolling=False)
+                            
+                            # 显示文件信息
+                            st.caption(f"密度文件: {os.path.basename(esp_files['density'])}")
+                            st.caption(f"ESP文件: {os.path.basename(esp_files['esp'])}")
+                            
+                            # 如果有 ESP info，显示极值信息
+                            if esp_files.get('info') and os.path.exists(esp_files['info']):
+                                _show_esp_info(esp_files['info'])
+                        else:
+                            # 多个 ESP 文件组，使用 tabs 切换
+                            st.markdown(f"**共 {len(esp_files_list)} 个 ESP 文件**")
+                            esp_tab_names = [f"#{i+1}: {get_structure_label(f['id'], i)}" for i, f in enumerate(esp_files_list)]
+                            esp_sub_tabs = st.tabs(esp_tab_names)
+                            
+                            for i, (sub_tab, esp_files) in enumerate(zip(esp_sub_tabs, esp_files_list)):
+                                with sub_tab:
+                                    esp_html = create_esp_viewer(
+                                        esp_files['density'],
+                                        esp_files['esp'],
+                                        esp_files.get('info'),
+                                        width=650,
+                                        height=450,
+                                        esp_colorscale_min=-esp_colorscale_max,
+                                        esp_colorscale_max=esp_colorscale_max,
+                                    )
+                                    components.html(esp_html, height=510, scrolling=False)
+                                    
+                                    # 显示文件信息
+                                    st.caption(f"密度文件: {os.path.basename(esp_files['density'])}")
+                                    
+                                    # 如果有 ESP info，显示极值信息
+                                    if esp_files.get('info') and os.path.exists(esp_files['info']):
+                                        _show_esp_info(esp_files['info'])
                                 
                     except Exception as e:
                         st.error(f"ESP 可视化失败: {e}")
@@ -693,84 +938,193 @@ def render_message_with_download(role: str, content: Any, key_prefix: str):
                         # 优先从 task 目录的 xyz_all 中查找
                         task_dir = os.path.dirname(os.path.dirname(infer_dir))
                         xyz_all_dir = os.path.join(task_dir, "xyz_all")
-                        molecule_path = None
                         
+                        # 收集所有 xyz 文件，按编号排序
+                        xyz_files_map = {}
                         if os.path.exists(xyz_all_dir):
                             import glob as glob_module
                             xyz_files = glob_module.glob(os.path.join(xyz_all_dir, "*.xyz"))
-                            if xyz_files:
-                                molecule_path = xyz_files[0]  # 取第一个
+                            for xf in xyz_files:
+                                basename = os.path.basename(xf)
+                                # 尝试从文件名提取编号
+                                m = re.search(r'(\d+)', basename)
+                                if m:
+                                    xyz_files_map[m.group(1)] = xf
+                                else:
+                                    xyz_files_map['0'] = xf
                         
-                        # 如果找不到 xyz，尝试从 db 导出
-                        if molecule_path is None and os.path.exists(db_path):
-                            from emolagent.visualization import atoms_to_xyz_string
-                            atoms = load_structure_from_db(db_path)
-                            if atoms:
-                                # 创建临时 xyz 文件
-                                temp_xyz_path = os.path.join(infer_dir, "temp_molecule.xyz")
-                                with open(temp_xyz_path, 'w') as f:
-                                    f.write(atoms_to_xyz_string(atoms, "Generated for Li Deformation visualization"))
-                                molecule_path = temp_xyz_path
-                        
-                        if molecule_path is None:
-                            st.warning("未找到分子结构文件，无法叠加显示")
-                        else:
-                            # 透明度控制
-                            col1, col2 = st.columns([3, 1])
-                            with col1:
-                                opacity = st.slider(
-                                    "表面透明度",
-                                    min_value=0.1,
-                                    max_value=1.0,
-                                    value=0.65,
-                                    step=0.05,
-                                    format="%.2f",
-                                    key=f"{key_prefix}_li_deform_opacity",
-                                    help="调整 Li deformation 表面的透明度"
-                                )
-                            with col2:
-                                st.metric("透明度", f"{opacity:.2f}")
-                            
-                            # 显示第一个 Li deformation 文件
-                            li_file = li_deform_files[0]
-                            
-                            li_deform_html = create_li_deformation_viewer(
-                                molecule_path=molecule_path,
-                                surface_pdb_path=li_file['path'],
-                                width=650,
-                                height=500,
-                                surface_opacity=opacity,
-                                isovalue=li_file.get('isovalue', '0.09'),
+                        # 透明度控制
+                        col1, col2 = st.columns([3, 1])
+                        with col1:
+                            opacity = st.slider(
+                                "表面透明度",
+                                min_value=0.1,
+                                max_value=1.0,
+                                value=0.65,
+                                step=0.05,
+                                format="%.2f",
+                                key=f"{key_prefix}_li_deform_opacity",
+                                help="调整 Li deformation 表面的透明度"
                             )
-                            components.html(li_deform_html, height=560, scrolling=False)
-                            st.caption(f"文件: {os.path.basename(li_file['path'])} | 等值面: {li_file.get('isovalue', 'N/A')}")
+                        with col2:
+                            st.metric("透明度", f"{opacity:.2f}")
+                        
+                        if len(li_deform_files) == 1:
+                            # 单个 Li deformation 文件
+                            li_file = li_deform_files[0]
+                            molecule_path = xyz_files_map.get(li_file['id'], list(xyz_files_map.values())[0] if xyz_files_map else None)
                             
-                            # 如果有多个文件，显示选择器
-                            if len(li_deform_files) > 1:
-                                st.markdown("---")
-                                st.markdown("**其他 Li Deformation 文件:**")
-                                for i, lf in enumerate(li_deform_files[1:], 1):
-                                    st.text(f"  {i}. {os.path.basename(lf['path'])} (isovalue: {lf.get('isovalue', 'N/A')})")
+                            if molecule_path is None and os.path.exists(db_path):
+                                # 从 db 导出
+                                from emolagent.visualization import atoms_to_xyz_string
+                                atoms = load_structure_from_db(db_path)
+                                if atoms:
+                                    temp_xyz_path = os.path.join(infer_dir, "temp_molecule.xyz")
+                                    with open(temp_xyz_path, 'w') as f:
+                                        f.write(atoms_to_xyz_string(atoms, "Generated for Li Deformation visualization"))
+                                    molecule_path = temp_xyz_path
+                            
+                            if molecule_path is None:
+                                st.warning("未找到分子结构文件，无法叠加显示")
+                            else:
+                                li_deform_html = create_li_deformation_viewer(
+                                    molecule_path=molecule_path,
+                                    surface_pdb_path=li_file['path'],
+                                    width=650,
+                                    height=500,
+                                    surface_opacity=opacity,
+                                    isovalue=li_file.get('isovalue', '0.09'),
+                                )
+                                components.html(li_deform_html, height=560, scrolling=False)
+                                st.caption(f"文件: {os.path.basename(li_file['path'])} | 等值面: {li_file.get('isovalue', 'N/A')}")
+                        else:
+                            # 多个 Li deformation 文件，使用 tabs 切换
+                            st.markdown(f"**共 {len(li_deform_files)} 个 Li Deformation 文件**")
+                            li_tab_names = [f"#{i+1}: {get_structure_label(f['id'], i)}" for i, f in enumerate(li_deform_files)]
+                            li_sub_tabs = st.tabs(li_tab_names)
+                            
+                            for i, (sub_tab, li_file) in enumerate(zip(li_sub_tabs, li_deform_files)):
+                                with sub_tab:
+                                    # 根据 li_file 的 id 查找对应的 xyz 文件
+                                    molecule_path = xyz_files_map.get(li_file['id'])
+                                    if molecule_path is None and xyz_files_map:
+                                        molecule_path = list(xyz_files_map.values())[0]
+                                    
+                                    if molecule_path is None and os.path.exists(db_path):
+                                        # 从 db 导出
+                                        from emolagent.visualization import atoms_to_xyz_string
+                                        atoms_list = load_all_structures_from_db(db_path, max_count=len(li_deform_files))
+                                        if atoms_list and i < len(atoms_list):
+                                            atoms, _ = atoms_list[i]
+                                            temp_xyz_path = os.path.join(infer_dir, f"temp_molecule_{i}.xyz")
+                                            with open(temp_xyz_path, 'w') as f:
+                                                f.write(atoms_to_xyz_string(atoms, f"Structure {i} for Li Deformation"))
+                                            molecule_path = temp_xyz_path
+                                    
+                                    if molecule_path is None:
+                                        st.warning("未找到分子结构文件，无法叠加显示")
+                                    else:
+                                        li_deform_html = create_li_deformation_viewer(
+                                            molecule_path=molecule_path,
+                                            surface_pdb_path=li_file['path'],
+                                            width=650,
+                                            height=450,
+                                            surface_opacity=opacity,
+                                            isovalue=li_file.get('isovalue', '0.09'),
+                                        )
+                                        components.html(li_deform_html, height=510, scrolling=False)
+                                        st.caption(f"文件: {os.path.basename(li_file['path'])} | 等值面: {li_file.get('isovalue', 'N/A')}")
                     except Exception as e:
                         st.error(f"Li Deformation 可视化失败: {e}")
 
         elif structure_match:
             db_path = structure_match.group(1).strip()
             if os.path.exists(db_path):
-                st.markdown("### 📊 结构预览")
+                # 获取数据库中的结构总数
+                total_count = get_structure_count_from_db(db_path)
+                max_display = 3  # 最多显示 3 个结构
                 
-                with st.expander("🔬 点击查看 3D 分子结构 (可交互)", expanded=True):
+                if total_count <= 1:
+                    # 单个结构：保持原有逻辑
+                    st.markdown("### 📊 结构预览")
+                    
+                    with st.expander("🔬 点击查看 3D 分子结构 (可交互)", expanded=True):
+                        try:
+                            atoms = load_structure_from_db(db_path)
+                            if atoms:
+                                viewer_html = create_gaussian_view_style_viewer(
+                                    atoms,
+                                    width=650,
+                                    height=500,
+                                    style="sphere+stick",
+                                    add_lighting=True
+                                )
+                                components.html(viewer_html, height=550, scrolling=False)
+                                
+                                st.caption(f"📁 结构路径: `{db_path}`")
+                                st.info("💡 提示：您可以说「对上面生成的结构进行电子结构分析」来继续分析")
+                            else:
+                                st.warning("无法加载结构预览")
+                        except Exception as e:
+                            st.error(f"结构预览失败: {e}")
+                else:
+                    # 多个结构：使用 tabs 展示
+                    displayed_count = min(total_count, max_display)
+                    st.markdown(f"### 📊 结构预览 (共 {total_count} 个团簇，显示前 {displayed_count} 个)")
+                    
                     try:
-                        atoms = load_structure_from_db(db_path)
-                        if atoms:
-                            viewer_html = create_gaussian_view_style_viewer(
-                                atoms,
-                                width=650,
-                                height=500,
-                                style="sphere+stick",
-                                add_lighting=True
-                            )
-                            components.html(viewer_html, height=550, scrolling=False)
+                        structures = load_all_structures_from_db(db_path, max_count=max_display)
+                        
+                        if structures:
+                            # 生成 tab 名称
+                            tab_names = []
+                            for i, (atoms, meta) in enumerate(structures):
+                                solv_name = meta.get('solvent_name', '')
+                                anion_name = meta.get('anion_name', '')
+                                n_solv = meta.get('n_solv', 0)
+                                n_anion = meta.get('n_anion', 0)
+                                category = meta.get('category', '')
+                                
+                                # 构建简洁的标签
+                                if anion_name and n_anion > 0:
+                                    label = f"{n_solv}{solv_name}+{n_anion}{anion_name}"
+                                else:
+                                    label = f"{n_solv}{solv_name}"
+                                if category:
+                                    label = f"[{category}] {label}"
+                                tab_names.append(f"结构{i+1}: {label}")
+                            
+                            tabs = st.tabs(tab_names)
+                            
+                            for i, (tab, (atoms, meta)) in enumerate(zip(tabs, structures)):
+                                with tab:
+                                    viewer_html = create_gaussian_view_style_viewer(
+                                        atoms,
+                                        width=650,
+                                        height=500,
+                                        style="sphere+stick",
+                                        add_lighting=True
+                                    )
+                                    components.html(viewer_html, height=550, scrolling=False)
+                                    
+                                    # 显示配方信息
+                                    solv_name = meta.get('solvent_name', 'Unknown')
+                                    anion_name = meta.get('anion_name', '')
+                                    n_solv = meta.get('n_solv', 0)
+                                    n_anion = meta.get('n_anion', 0)
+                                    ion = meta.get('ion', 'Li')
+                                    
+                                    formula_parts = [f"1x{ion}⁺"]
+                                    if n_solv > 0:
+                                        formula_parts.append(f"{n_solv}x{solv_name}")
+                                    if n_anion > 0 and anion_name:
+                                        formula_parts.append(f"{n_anion}x{anion_name}⁻")
+                                    
+                                    st.caption(f"配方: {' + '.join(formula_parts)} | 化学式: {atoms.get_chemical_formula()} | 原子数: {len(atoms)}")
+                            
+                            # 如果有更多未显示的结构
+                            if total_count > max_display:
+                                st.info(f"💡 还有 {total_count - max_display} 个团簇未显示。完整结果请下载分析包查看。")
                             
                             st.caption(f"📁 结构路径: `{db_path}`")
                             st.info("💡 提示：您可以说「对上面生成的结构进行电子结构分析」来继续分析")

@@ -152,6 +152,72 @@ def load_structure_from_db(db_path: str, index: int = 0) -> Optional[Atoms]:
         return None
 
 
+def load_all_structures_from_db(db_path: str, max_count: int = 3) -> List[Tuple[Atoms, Dict[str, Any]]]:
+    """
+    从 ASE 数据库加载所有结构及其元数据。
+    
+    Args:
+        db_path: 数据库文件路径
+        max_count: 最大加载数量，默认为 3
+        
+    Returns:
+        包含 (Atoms, metadata_dict) 元组的列表
+    """
+    structures: List[Tuple[Atoms, Dict[str, Any]]] = []
+    
+    if not os.path.exists(db_path):
+        return structures
+    
+    try:
+        with connect(db_path) as db:
+            total_count = db.count()
+            if total_count == 0:
+                return structures
+            
+            for i, row in enumerate(db.select()):
+                if i >= max_count:
+                    break
+                    
+                atoms = row.toatoms()
+                
+                # 提取元数据
+                metadata: Dict[str, Any] = {
+                    'id': row.id,
+                    'name': row.get('name', f'Structure {row.id}'),
+                    'category': row.get('category', ''),
+                    'solvent_name': row.get('solvent_name', ''),
+                    'anion_name': row.get('anion_name', ''),
+                    'n_solv': row.get('n_solv', 0),
+                    'n_anion': row.get('n_anion', 0),
+                    'ion': row.get('ion', 'Li'),
+                    'charge': row.get('charge', 0),
+                }
+                
+                structures.append((atoms, metadata))
+            
+            # 记录总数信息（用于显示"还有 N 个未显示"）
+            if structures:
+                structures[0][1]['_total_count'] = total_count
+                
+    except Exception as e:
+        logger.error(f"Error loading structures from db: {e}")
+    
+    return structures
+
+
+def get_structure_count_from_db(db_path: str) -> int:
+    """获取数据库中的结构总数。"""
+    if not os.path.exists(db_path):
+        return 0
+    
+    try:
+        with connect(db_path) as db:
+            return db.count()
+    except Exception as e:
+        logger.error(f"Error counting structures: {e}")
+        return 0
+
+
 def create_orbital_viewer(
     cube_path: str,
     width: int = 600,
@@ -234,9 +300,15 @@ def create_orbital_viewer(
         return f"<p style='color: red;'>加载轨道可视化失败: {e}</p>"
 
 
-def find_orbital_files(inference_dir: str) -> Dict[str, Optional[str]]:
-    """在推断结果目录中查找 HOMO 和 LUMO cube 文件。"""
-    result: Dict[str, Optional[str]] = {'homo': None, 'lumo': None}
+def find_orbital_files(inference_dir: str) -> Dict[str, List[Dict[str, str]]]:
+    """
+    在推断结果目录中查找所有 HOMO 和 LUMO cube 文件。
+    
+    Returns:
+        包含 'homo' 和 'lumo' 键的字典，每个值是文件信息列表
+        每个文件信息包含 'path', 'id', 'dir_name' 键
+    """
+    result: Dict[str, List[Dict[str, str]]] = {'homo': [], 'lumo': []}
     
     if not os.path.exists(inference_dir):
         return result
@@ -250,14 +322,39 @@ def find_orbital_files(inference_dir: str) -> Dict[str, Optional[str]]:
         os.path.join(inference_dir, "lumo.cube"),
     ]
     
+    found_homo = set()
+    found_lumo = set()
+    
     for pattern in search_patterns:
         matches = glob.glob(pattern)
         for match in matches:
             basename = os.path.basename(match).lower()
-            if 'homo' in basename and result['homo'] is None:
-                result['homo'] = match
-            elif 'lumo' in basename and result['lumo'] is None:
-                result['lumo'] = match
+            parent_dir = os.path.basename(os.path.dirname(match))
+            
+            # 尝试从目录名提取 id
+            try:
+                file_id = int(parent_dir) if parent_dir.isdigit() else len(found_homo) + len(found_lumo)
+            except:
+                file_id = len(found_homo) + len(found_lumo)
+            
+            if 'homo' in basename and match not in found_homo:
+                found_homo.add(match)
+                result['homo'].append({
+                    'path': match,
+                    'id': str(file_id),
+                    'dir_name': parent_dir,
+                })
+            elif 'lumo' in basename and match not in found_lumo:
+                found_lumo.add(match)
+                result['lumo'].append({
+                    'path': match,
+                    'id': str(file_id),
+                    'dir_name': parent_dir,
+                })
+    
+    # 按 id 排序
+    result['homo'].sort(key=lambda x: int(x['id']) if x['id'].isdigit() else 0)
+    result['lumo'].sort(key=lambda x: int(x['id']) if x['id'].isdigit() else 0)
     
     return result
 
@@ -412,14 +509,14 @@ def create_li_deformation_viewer(
         return f"<p style='color: red;'>加载 Li Deformation 可视化失败: {e}</p>"
 
 
-def find_esp_files(inference_dir: str) -> Dict[str, Optional[str]]:
+def find_esp_files(inference_dir: str) -> List[Dict[str, Optional[str]]]:
     """
-    在推断结果目录中查找 ESP 可视化所需的文件。
+    在推断结果目录中查找所有 ESP 可视化所需的文件。
     
     Returns:
-        包含 'density', 'esp', 'info' 键的字典
+        文件组列表，每组包含 'density', 'esp', 'info', 'id', 'dir_name' 键
     """
-    result: Dict[str, Optional[str]] = {'density': None, 'esp': None, 'info': None}
+    result: List[Dict[str, Optional[str]]] = []
     
     if not os.path.exists(inference_dir):
         return result
@@ -428,27 +525,32 @@ def find_esp_files(inference_dir: str) -> Dict[str, Optional[str]]:
     search_dirs = [
         os.path.join(inference_dir, "results", "*"),
         os.path.join(inference_dir, "*"),
-        inference_dir,
     ]
+    
+    found_dirs = set()
     
     for search_dir in search_dirs:
         dirs = glob.glob(search_dir) if '*' in search_dir else [search_dir]
         for d in dirs:
-            if not os.path.isdir(d):
+            if not os.path.isdir(d) or d in found_dirs:
                 continue
             
+            dir_name = os.path.basename(d)
+            
             # 查找 density cube 文件
+            density_file = None
             density_candidates = [
                 os.path.join(d, "infer_ESPCalculator_density.cub"),
                 os.path.join(d, "density.cub"),
                 os.path.join(d, "density.cube"),
             ]
             for f in density_candidates:
-                if os.path.exists(f) and result['density'] is None:
-                    result['density'] = f
+                if os.path.exists(f):
+                    density_file = f
                     break
             
             # 查找 ESP cube 文件
+            esp_file = None
             esp_candidates = [
                 os.path.join(d, "infer_ESPCalculator_totesp.cub"),
                 os.path.join(d, "totesp.cub"),
@@ -456,23 +558,71 @@ def find_esp_files(inference_dir: str) -> Dict[str, Optional[str]]:
                 os.path.join(d, "esp.cube"),
             ]
             for f in esp_candidates:
-                if os.path.exists(f) and result['esp'] is None:
-                    result['esp'] = f
+                if os.path.exists(f):
+                    esp_file = f
                     break
             
             # 查找 info json 文件
+            info_file = None
             info_candidates = [
                 os.path.join(d, "infer_esp_info.json"),
                 os.path.join(d, "esp_info.json"),
             ]
             for f in info_candidates:
-                if os.path.exists(f) and result['info'] is None:
-                    result['info'] = f
+                if os.path.exists(f):
+                    info_file = f
                     break
             
-            # 如果找齐了就返回
-            if all(result.values()):
-                return result
+            # 如果找到 density 和 esp 文件，添加到结果
+            if density_file and esp_file:
+                found_dirs.add(d)
+                try:
+                    file_id = int(dir_name) if dir_name.isdigit() else len(result)
+                except:
+                    file_id = len(result)
+                
+                result.append({
+                    'density': density_file,
+                    'esp': esp_file,
+                    'info': info_file,
+                    'id': str(file_id),
+                    'dir_name': dir_name,
+                })
+    
+    # 也检查根目录
+    density_file = None
+    esp_file = None
+    info_file = None
+    
+    for f in [os.path.join(inference_dir, "infer_ESPCalculator_density.cub"),
+              os.path.join(inference_dir, "density.cub")]:
+        if os.path.exists(f):
+            density_file = f
+            break
+    
+    for f in [os.path.join(inference_dir, "infer_ESPCalculator_totesp.cub"),
+              os.path.join(inference_dir, "totesp.cub")]:
+        if os.path.exists(f):
+            esp_file = f
+            break
+    
+    for f in [os.path.join(inference_dir, "infer_esp_info.json"),
+              os.path.join(inference_dir, "esp_info.json")]:
+        if os.path.exists(f):
+            info_file = f
+            break
+    
+    if density_file and esp_file:
+        result.append({
+            'density': density_file,
+            'esp': esp_file,
+            'info': info_file,
+            'id': str(len(result)),
+            'dir_name': 'root',
+        })
+    
+    # 按 id 排序
+    result.sort(key=lambda x: int(x['id']) if x['id'].isdigit() else 0)
     
     return result
 

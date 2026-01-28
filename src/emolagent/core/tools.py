@@ -257,6 +257,198 @@ def build_and_optimize_cluster(
         return f"Error in build_and_optimize_cluster: {str(e)}"
 
 
+def build_multiple_clusters(
+    ion_name: str,
+    recipes: list,
+    output_dir: str
+) -> str:
+    """
+    批量构建多个不同配方的团簇，逐个配方精确构建，然后统一进行 UMA 优化。
+    
+    与 build_and_optimize_cluster 的区别：这个函数会精确构建用户指定的每个配方，
+    而不是做笛卡尔积组合。
+    
+    Args:
+        ion_name: 离子名称 (如 "Li")
+        recipes: 配方列表，每个配方包含:
+            [
+                {
+                    "solvents": [{"name": "DME", "path": "...", "count": 3}],
+                    "anions": [{"name": "FSI", "path": "...", "count": 1}]
+                },
+                {
+                    "solvents": [{"name": "DME", "path": "...", "count": 2}],
+                    "anions": [{"name": "FSI", "path": "...", "count": 2}]
+                }
+            ]
+        output_dir: 输出目录
+        
+    Returns:
+        JSON 格式的结果字符串
+    """
+    try:
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir, exist_ok=True)
+
+        if not recipes or len(recipes) == 0:
+            return json.dumps({"success": False, "msg": "No recipes provided."})
+
+        logger.info(f"[Batch Build] Processing {len(recipes)} recipes separately...")
+        
+        # 为每个配方单独构建，不做优化，最后统一优化
+        all_clusters_db_path = os.path.join(output_dir, "all_clusters_raw.db")
+        if os.path.exists(all_clusters_db_path):
+            os.remove(all_clusters_db_path)
+        
+        total_built = 0
+        total_failed = 0
+        
+        for idx, recipe in enumerate(recipes):
+            solvents_config = recipe.get("solvents", [])
+            anions_config = recipe.get("anions", [])
+            
+            # 解析溶剂参数
+            solvent_args = []
+            s_count = 1
+            for s_item in solvents_config:
+                if s_item.get('path') and os.path.exists(s_item.get('path')):
+                    solvent_args.append(s_item['path'])
+                elif s_item.get('smiles'):
+                    solvent_args.append(s_item['smiles'])
+                if s_item.get('count'):
+                    try:
+                        s_count = int(s_item['count'])
+                    except ValueError:
+                        pass
+            
+            # 解析阴离子参数
+            anion_args = []
+            a_count = 0
+            for a_item in anions_config:
+                if a_item.get("path"):
+                    p = os.path.abspath(a_item["path"])
+                    if os.path.exists(p):
+                        anion_args.append(p)
+                elif a_item.get('smiles'):
+                    anion_args.append(a_item['smiles'])
+                if a_item.get('count'):
+                    try:
+                        a_count = int(a_item['count'])
+                    except ValueError:
+                        pass
+            
+            if not solvent_args:
+                logger.warning(f"[Batch Build] Recipe {idx+1}: No solvent, skipping")
+                total_failed += 1
+                continue
+            
+            # 确定 category
+            if a_count == 0:
+                cat = "SSIP"
+            elif a_count == 1:
+                cat = "CIP"
+            else:
+                cat = "AGG"
+            
+            logger.info(f"[Batch Build] Recipe {idx+1}/{len(recipes)}: {s_count} solvent + {a_count} anion ({cat})")
+            
+            # 为这个配方创建临时目录
+            recipe_dir = os.path.join(output_dir, f"recipe_{idx+1}")
+            
+            # 调用 cluster_factory.entry，精确匹配这个配方
+            # solv_counts 只包含这一个数量，agg_anion_counts 也只包含这一个
+            try:
+                stats = cluster_factory.entry(
+                    solvents=solvent_args,
+                    anions=anion_args if anion_args else None,
+                    out_dir=recipe_dir,
+                    ion=ion_name,
+                    solv_counts=(s_count,),  # 精确指定溶剂数量
+                    agg_anion_counts=(a_count,) if a_count > 1 else (2,),  # AGG 时精确指定
+                    max_total_ligands=s_count + a_count,
+                    categories=(cat,),  # 只构建这一个类型
+                    optimize_result=False,  # 先不优化，最后统一优化
+                    device='cuda' if torch.cuda.is_available() else 'cpu',
+                    verbose=False,
+                    show_progress=False
+                )
+                
+                # 将结果合并到总数据库
+                recipe_db = os.path.join(recipe_dir, "all.db")
+                if os.path.exists(recipe_db):
+                    with connect(recipe_db) as src_db:
+                        src_count = src_db.count()
+                        logger.info(f"[Batch Build] Recipe {idx+1}: Source DB has {src_count} structure(s)")
+                        
+                        with connect(all_clusters_db_path) as dst_db:
+                            for row in src_db.select():
+                                atoms = row.toatoms()
+                                kvp = row.key_value_pairs.copy() if row.key_value_pairs else {}
+                                data = row.data.copy() if row.data else {}
+                                # 添加配方索引信息
+                                kvp['recipe_index'] = idx + 1
+                                dst_db.write(atoms, data=data, **kvp)
+                    
+                    # 使用实际从源数据库读取的数量
+                    total_built += src_count
+                    logger.info(f"[Batch Build] Recipe {idx+1}: Merged {src_count} cluster(s), total now: {total_built}")
+                else:
+                    total_failed += 1
+                    logger.warning(f"[Batch Build] Recipe {idx+1}: No output DB found")
+                    
+            except Exception as e:
+                total_failed += 1
+                logger.error(f"[Batch Build] Recipe {idx+1} failed: {e}")
+        
+        if total_built == 0:
+            return json.dumps({"success": False, "msg": "No clusters were built from any recipe."})
+        
+        # 验证合并后的数据库实际结构数量
+        with connect(all_clusters_db_path) as check_db:
+            actual_count = check_db.count()
+            logger.info(f"[Batch Build] Merged DB verification: {actual_count} structures in {all_clusters_db_path}")
+            if actual_count != total_built:
+                logger.warning(f"[Batch Build] Mismatch! Expected {total_built}, got {actual_count}")
+        
+        # 统一进行 UMA 优化
+        logger.info(f"[Batch Build] Starting UMA optimization for {actual_count} clusters...")
+        
+        from emolagent.core import uma_optimizer
+        
+        final_opt_dir = os.path.join(output_dir, "final_optimized")
+        optimized_db_path = uma_optimizer.entry(
+            input_db=all_clusters_db_path,
+            workspace=final_opt_dir,
+            device='cuda' if torch.cuda.is_available() else 'cpu',
+            verbose=False,
+            show_progress=False
+        )
+        
+        logger.info(f"[Batch Build] Optimization complete. Output: {optimized_db_path}")
+        
+        if optimized_db_path and os.path.exists(optimized_db_path):
+            return json.dumps({
+                "success": True, 
+                "optimized_db": optimized_db_path,
+                "stats": {"built": total_built, "failed": total_failed},
+                "recipes_count": len(recipes),
+                "msg": f"Successfully built {total_built} clusters from {len(recipes)} recipes."
+            })
+        else:
+            # 如果优化失败，返回原始数据库
+            return json.dumps({
+                "success": True,
+                "optimized_db": all_clusters_db_path,
+                "stats": {"built": total_built, "failed": total_failed},
+                "recipes_count": len(recipes),
+                "msg": f"Built {total_built} clusters (optimization may have failed)."
+            })
+
+    except Exception as e:
+        logger.exception("Error occurred in build_multiple_clusters")
+        return json.dumps({"success": False, "msg": f"Error: {str(e)}"})
+
+
 # ==========================================
 # 电子结构推断 (Infer + DM Analysis)
 # ==========================================
