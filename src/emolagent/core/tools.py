@@ -20,13 +20,14 @@ from emoles.inference import infer_entry
 
 from emolagent.utils.logger import logger
 from emolagent.utils.paths import get_resource_path
+from emolagent.utils.config import DatabaseConfig
 from emolagent.core import cluster_factory
 
 # ==========================================
-# 常量定义
+# 常量定义（从配置文件加载）
 # ==========================================
-SOLVENT_DB_PATH = get_resource_path("db", "cut_10_common.db")
-ANION_DB_PATH = get_resource_path("db", "anions.db")
+SOLVENT_DB_PATH = DatabaseConfig.get_solvent_db_path()
+ANION_DB_PATH = DatabaseConfig.get_anion_db_path()
 
 
 class NumpyEncoder(json.JSONEncoder):
@@ -460,14 +461,12 @@ def build_multiple_clusters(
 import fcntl
 import threading
 
-# 每张 GPU 最大同时运行的推理任务数
-MAX_TASKS_PER_GPU = 2
+from emolagent.utils.config import GPUConfig
 
-# 可用的 GPU 设备列表
-AVAILABLE_GPUS = [0, 1]
-
-# 总最大并发任务数
-MAX_CONCURRENT_INFER_TASKS = MAX_TASKS_PER_GPU * len(AVAILABLE_GPUS)
+# GPU 配置（从配置文件加载）
+MAX_TASKS_PER_GPU = GPUConfig.get_max_tasks_per_gpu()
+AVAILABLE_GPUS = GPUConfig.get_available_gpus()
+MAX_CONCURRENT_INFER_TASKS = GPUConfig.get_max_concurrent_tasks()
 
 # 任务槽目录（用于存放锁文件）
 _TASK_SLOT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), ".task_slots")

@@ -18,6 +18,7 @@ import extra_streamlit_components as stx
 
 from emolagent.utils.logger import logger
 from emolagent.utils.paths import get_resource_path, get_project_root
+from emolagent.utils.config import ModelConfig, AuthConfig, KnowledgeConfig
 
 from emolagent.database import db
 from emolagent.core.tools import (
@@ -33,7 +34,6 @@ from emolagent.knowledge import (
     search_knowledge,
     build_index,
     get_index_stats,
-    LITERATURE_PATH,
 )
 
 from langchain.agents import create_agent
@@ -59,9 +59,10 @@ from emolagent.visualization import (
 import streamlit.components.v1 as components
 
 
-DEFAULT_MODEL_PATH = get_resource_path("models", "nnenv.ep154.pth")
-
-ADMIN_USERS = ["hayes"]
+# 配置参数（从配置文件加载）
+DEFAULT_MODEL_PATH = ModelConfig.get_inference_model_path()
+ADMIN_USERS = AuthConfig.get_admin_users()
+LITERATURE_PATH = KnowledgeConfig.get_literature_path()
 
 WELCOME_MESSAGE = """您好！我是 EMolAgent，您的计算化学 AI 助手。
 

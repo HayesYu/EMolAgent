@@ -18,6 +18,7 @@ from tqdm import tqdm
 
 from emolagent.utils.logger import logger
 from emolagent.utils.paths import get_resource_path
+from emolagent.utils.config import ModelConfig, OutputConfig
 
 # 全局锁，用于保护 FAIRChem 模型加载（防止并发懒加载冲突）
 _MODEL_LOAD_LOCK = threading.Lock()
@@ -36,11 +37,11 @@ from fairchem.core.units.mlip_unit import load_predict_unit
 from fairchem.core.calculate.pretrained_mlip import get_isolated_atomic_energies
 
 # ==========================================
-# Default Configuration
+# Default Configuration（从配置文件加载）
 # ==========================================
-DEFAULT_CHECKPOINT = get_resource_path("models", "uma-m-1p1.pt")
-DEFAULT_WORKSPACE = os.path.abspath('out_li_clusters')
-DEFAULT_MODEL_NAME = "uma-m-1p1"
+DEFAULT_CHECKPOINT = ModelConfig.get_uma_checkpoint_path()
+DEFAULT_WORKSPACE = OutputConfig.get_uma_workspace()
+DEFAULT_MODEL_NAME = ModelConfig.get_uma_model_name()
 
 
 def sanitize_name(s: str) -> str:

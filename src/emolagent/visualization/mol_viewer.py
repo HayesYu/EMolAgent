@@ -14,6 +14,7 @@ import py3Dmol
 import numpy as np
 
 from emolagent.utils.logger import logger
+from emolagent.utils.config import VisualizationConfig
 
 # Element colors (CPK coloring scheme similar to Gaussian View)
 ELEMENT_COLORS = {
@@ -363,10 +364,12 @@ def find_li_deformation_files(inference_dir: str) -> List[Dict[str, str]]:
     """
     在推断结果目录中查找 Li deformation surface PDB 文件。
     
-    文件名格式: Li_infer_{id}_diff{isovalue}_surface.pdb
+    文件名格式: Li_infer_{li_index}_diff{isovalue}_surface.pdb
+    文件位于 results/{structure_id}/ 目录下
     
     Returns:
-        包含 'path', 'id', 'isovalue' 键的字典列表
+        包含 'path', 'id', 'isovalue', 'li_index' 键的字典列表
+        其中 'id' 是结构 ID（目录名），用于匹配 structure_labels
     """
     result: List[Dict[str, str]] = []
     
@@ -386,18 +389,24 @@ def find_li_deformation_files(inference_dir: str) -> List[Dict[str, str]]:
             if match not in found_files:
                 found_files.add(match)
                 basename = os.path.basename(match)
+                parent_dir = os.path.basename(os.path.dirname(match))
+                
                 # 解析文件名: Li_infer_1_diff0p09_surface.pdb
+                # 其中 _1_ 是 Li 原子的 1-based 索引（不是结构 ID）
                 import re
                 m = re.match(r'Li_(\w+)_(\d+)_diff(\w+)_surface\.pdb', basename)
                 if m:
+                    # 使用父目录名作为结构 ID（与 structure_labels 对应）
+                    structure_id = parent_dir if parent_dir.isdigit() else str(len(result))
                     result.append({
                         'path': match,
-                        'type': m.group(1),  # infer/pred/target
-                        'id': m.group(2),
+                        'type': m.group(1),       # infer/pred/target
+                        'li_index': m.group(2),   # Li 原子索引（1-based）
+                        'id': structure_id,       # 结构 ID（目录名，0-based）
                         'isovalue': m.group(3).replace('p', '.'),  # 0p09 -> 0.09
                     })
     
-    # 按 id 排序
+    # 按结构 id 排序
     result.sort(key=lambda x: int(x.get('id', 0)))
     return result
 
@@ -1239,8 +1248,12 @@ def create_esp_viewer_fallback(
         return f"<p style='color: red;'>加载 ESP 可视化失败: {e}</p>"
 
 
-def create_structure_preview_html(db_path: str, max_structures: int = 3) -> str:
+def create_structure_preview_html(db_path: str, max_structures: int = None) -> str:
     """为数据库中的结构创建 HTML 预览。"""
+    # 使用配置文件中的默认值
+    if max_structures is None:
+        max_structures = VisualizationConfig.get_max_preview_structures()
+    
     if not os.path.exists(db_path):
         return "<p style='color: red;'>结构文件不存在</p>"
     
@@ -1318,9 +1331,10 @@ def create_analysis_visualization_html(
     
     orbital_files = find_orbital_files(inference_dir)
     
-    if orbital_files['homo']:
+    # orbital_files['homo'] 是列表，取第一个文件的路径
+    if orbital_files['homo'] and len(orbital_files['homo']) > 0:
         result['homo'] = create_orbital_viewer(
-            orbital_files['homo'], 
+            orbital_files['homo'][0]['path'], 
             width=width, 
             height=height,
             iso_value=0.02,
@@ -1328,9 +1342,9 @@ def create_analysis_visualization_html(
         )
         result['homo_available'] = True
     
-    if orbital_files['lumo']:
+    if orbital_files['lumo'] and len(orbital_files['lumo']) > 0:
         result['lumo'] = create_orbital_viewer(
-            orbital_files['lumo'],
+            orbital_files['lumo'][0]['path'],
             width=width,
             height=height, 
             iso_value=0.02,
@@ -1339,16 +1353,19 @@ def create_analysis_visualization_html(
         result['lumo_available'] = True
     
     # 查找并创建 ESP 可视化
+    # esp_files 是列表，取第一个文件组
     esp_files = find_esp_files(inference_dir)
-    if esp_files['density'] and esp_files['esp']:
-        result['esp'] = create_esp_viewer(
-            esp_files['density'],
-            esp_files['esp'],
-            esp_files['info'],
-            width=width,
-            height=height
-        )
-        result['esp_available'] = True
+    if esp_files and len(esp_files) > 0:
+        esp_group = esp_files[0]
+        if esp_group.get('density') and esp_group.get('esp'):
+            result['esp'] = create_esp_viewer(
+                esp_group['density'],
+                esp_group['esp'],
+                esp_group.get('info'),
+                width=width,
+                height=height
+            )
+            result['esp_available'] = True
     
     return result
 
