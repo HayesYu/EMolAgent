@@ -26,6 +26,7 @@ from emolagent.core.tools import (
     build_multiple_clusters,
     run_dm_infer_pipeline,
     compress_directory,
+    get_task_queue_status,
 )
 
 from emolagent.knowledge import (
@@ -361,7 +362,7 @@ def tool_build_multiple_clusters(ion_name: str, recipes_json: str, runtime: Tool
         "Returns a string containing [[DOWNLOAD:...]] zip link on success."
     ),
 )
-def tool_infer_pipeline(optimized_db_path: str, model_path: str | None = None) -> str:
+def tool_infer_pipeline(optimized_db_path: str, model_path: str | None, runtime: ToolRuntime[Context]) -> str:
     """运行电子结构推断。"""
     if model_path in ["None", "", None]:
         model_path = DEFAULT_MODEL_PATH
@@ -380,18 +381,30 @@ def tool_infer_pipeline(optimized_db_path: str, model_path: str | None = None) -
 
     run_id = str(time.time_ns())
     infer_out = os.path.join(task_root, f"inference_results_{run_id}")
-    result_json_str = run_dm_infer_pipeline(optimized_db_path, model_path, infer_out)
+    
+    # 获取用户 ID 用于日志追踪
+    user_id = None
+    if runtime and runtime.context:
+        user_id = runtime.context.username or runtime.context.user_id
+    
+    result_json_str = run_dm_infer_pipeline(
+        optimized_db_path, 
+        model_path, 
+        infer_out,
+        user_id=user_id
+    )
 
     try:
         res_dict = json.loads(result_json_str)
         if res_dict.get("success"):
             csv_path = res_dict.get("csv_path")
             output_dir = res_dict.get("output_dir", infer_out)
+            gpu_id = res_dict.get("gpu_id", "N/A")
             zip_base_name = os.path.join(task_root, f"analysis_package_{run_id}")
             zip_path = compress_directory(output_dir, zip_base_name)
 
             return (
-                f"推理完成。\n"
+                f"推理完成 (GPU {gpu_id})。\n"
                 f"CSV摘要路径: {csv_path}\n"
                 f"数据预览: {res_dict.get('data_preview')}\n"
                 f"[[ANALYSIS_VISUALIZATION:{optimized_db_path}|{infer_out}]]\n"
@@ -1277,6 +1290,33 @@ def main():
                             )
                         except Exception as e:
                             st.error(f"索引失败: {e}")
+
+        st.markdown("---")
+        st.header("🖥️ GPU 任务状态")
+        try:
+            queue_status = get_task_queue_status()
+            col_q1, col_q2 = st.columns(2)
+            with col_q1:
+                st.metric("运行中", f"{queue_status['active_tasks']}")
+            with col_q2:
+                st.metric("最大并发", f"{queue_status['max_tasks']}")
+            
+            # 显示每张 GPU 的负载
+            gpu_loads = queue_status.get('gpu_loads', {})
+            if gpu_loads:
+                st.caption("**GPU 负载分布:**")
+                gpu_cols = st.columns(len(gpu_loads))
+                for i, (gpu_id, load) in enumerate(sorted(gpu_loads.items())):
+                    with gpu_cols[i]:
+                        max_per_gpu = queue_status['max_tasks'] // len(gpu_loads)
+                        st.metric(f"GPU {gpu_id}", f"{load}/{max_per_gpu}")
+            
+            if queue_status['can_accept']:
+                st.success(f"✅ 可接受新任务 (剩余 {queue_status['available_slots']} 槽位)")
+            else:
+                st.warning(f"⏳ 队列已满，新任务需排队等待")
+        except Exception as e:
+            st.caption(f"无法获取队列状态: {e}")
 
     # 2. Session Init
     if st.session_state.get("current_chat_id") is None:

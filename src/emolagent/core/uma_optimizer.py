@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import argparse
+import threading
 import numpy as np
 from ase import Atoms
 from ase.io import write
@@ -17,6 +18,9 @@ from tqdm import tqdm
 
 from emolagent.utils.logger import logger
 from emolagent.utils.paths import get_resource_path
+
+# 全局锁，用于保护 FAIRChem 模型加载（防止并发懒加载冲突）
+_MODEL_LOAD_LOCK = threading.Lock()
 
 # Optional import for SMILES processing
 try:
@@ -153,12 +157,16 @@ def entry(
     if verbose:
         logger.info(f"Workdir: {workspace}\nInput: {active_input_db}\nOutput: {out_db_path}")
 
-    # 3. Model Loading
+    # 3. Model Loading (使用锁防止并发懒加载冲突)
     if verbose:
         logger.info("Loading FAIRChem model...")
-    atom_refs = get_isolated_atomic_energies(DEFAULT_MODEL_NAME, workspace)
-    predictor = load_predict_unit(checkpoint_path, "default", None, device, atom_refs)
-    calc = FAIRChemCalculator(predictor, task_name="omol")
+    
+    with _MODEL_LOAD_LOCK:
+        logger.debug(f"[UMA] Acquired model load lock for workspace: {workspace}")
+        atom_refs = get_isolated_atomic_energies(DEFAULT_MODEL_NAME, workspace)
+        predictor = load_predict_unit(checkpoint_path, "default", None, device, atom_refs)
+        calc = FAIRChemCalculator(predictor, task_name="omol")
+        logger.debug(f"[UMA] Released model load lock, model ready")
 
     # 4. Optimization Loop
     if not os.path.exists(active_input_db):
