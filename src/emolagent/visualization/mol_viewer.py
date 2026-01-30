@@ -15,6 +15,7 @@ import numpy as np
 
 from emolagent.utils.logger import logger
 from emolagent.utils.config import VisualizationConfig
+from emolagent.utils.i18n import t
 
 # Element colors (CPK coloring scheme similar to Gaussian View)
 ELEMENT_COLORS = {
@@ -80,6 +81,7 @@ def create_gaussian_view_style_viewer(
     background_color: str = "#1a1a2e",
     show_labels: bool = False,
     add_lighting: bool = True,
+    lang: str = "zh",
 ) -> str:
     """
     创建 Gaussian View 风格的 3D 分子查看器 HTML。
@@ -92,6 +94,7 @@ def create_gaussian_view_style_viewer(
         background_color: 背景颜色
         show_labels: 是否显示原子标签
         add_lighting: 是否添加增强光照效果
+        lang: 语言代码 ("zh" 或 "en")
         
     Returns:
         包含交互式 3D 查看器的 HTML 字符串
@@ -122,14 +125,19 @@ def create_gaussian_view_style_viewer(
     
     html = viewer._make_html()
     
+    # 多语言文本
+    mouse_hint = t("vis_mouse_hint", lang)
+    atom_count_label = t("vis_atom_count", lang)
+    formula_label = t("chemical_formula", lang)
+    
     wrapper_html = f"""
     <div style="border: 2px solid #4a4a6a; border-radius: 8px; padding: 10px; background: #0d0d1a;">
         <div style="color: #aaa; font-size: 12px; margin-bottom: 5px; text-align: center;">
-            🖱️ 左键拖动旋转 | 滚轮缩放 | 右键平移
+            {mouse_hint}
         </div>
         {html}
         <div style="color: #888; font-size: 11px; margin-top: 5px; text-align: center;">
-            原子数: {len(atoms)} | 化学式: {atoms.get_chemical_formula()}
+            {atom_count_label}: {len(atoms)} | {formula_label}: {atoms.get_chemical_formula()}
         </div>
     </div>
     """
@@ -226,6 +234,7 @@ def create_orbital_viewer(
     iso_value: float = 0.02,
     orbital_type: str = "HOMO",
     background_color: str = "#1a1a2e",
+    lang: str = "zh",
 ) -> str:
     """
     创建分子轨道（cube 文件）可视化查看器。
@@ -237,6 +246,7 @@ def create_orbital_viewer(
         iso_value: 等值面数值
         orbital_type: 轨道类型 ("HOMO" 或 "LUMO")
         background_color: 背景颜色
+        lang: 语言代码 ("zh" 或 "en")
         
     Returns:
         包含交互式 3D 轨道查看器的 HTML 字符串
@@ -281,16 +291,23 @@ def create_orbital_viewer(
         
         html = viewer._make_html()
         
+        # 多语言文本
+        mouse_hint = t("vis_mouse_hint", lang)
+        orbital_label = t("vis_orbital", lang)
+        isovalue_label = t("vis_isovalue", lang)
+        positive_label = t("vis_positive_phase", lang)
+        negative_label = t("vis_negative_phase", lang)
+        
         wrapper_html = f"""
         <div style="border: 2px solid #4a4a6a; border-radius: 8px; padding: 10px; background: #0d0d1a;">
             <div style="color: #aaa; font-size: 12px; margin-bottom: 5px; text-align: center;">
-                🖱️ 左键拖动旋转 | 滚轮缩放 | 右键平移
+                {mouse_hint}
             </div>
             {html}
             <div style="color: #888; font-size: 11px; margin-top: 5px; text-align: center;">
-                {orbital_type} 轨道 | 等值面: ±{iso_value} &nbsp;
-                <span style="color: {pos_color};">■</span> 正相位 &nbsp;
-                <span style="color: {neg_color};">■</span> 负相位
+                {orbital_type} {orbital_label} | {isovalue_label}: ±{iso_value} &nbsp;
+                <span style="color: {pos_color};">■</span> {positive_label} &nbsp;
+                <span style="color: {neg_color};">■</span> {negative_label}
             </div>
         </div>
         """
@@ -298,7 +315,8 @@ def create_orbital_viewer(
         return wrapper_html
         
     except Exception as e:
-        return f"<p style='color: red;'>加载轨道可视化失败: {e}</p>"
+        error_msg = t("vis_load_orbital_failed", lang)
+        return f"<p style='color: red;'>{error_msg}: {e}</p>"
 
 
 def find_orbital_files(inference_dir: str) -> Dict[str, List[Dict[str, str]]]:
@@ -420,6 +438,7 @@ def create_li_deformation_viewer(
     surface_opacity: float = 0.65,
     background_color: str = "#1a1a2e",
     isovalue: str = "0.09",
+    lang: str = "zh",
 ) -> str:
     """
     创建 Li deformation factor 可视化查看器。
@@ -436,6 +455,7 @@ def create_li_deformation_viewer(
         surface_opacity: 表面透明度
         background_color: 背景颜色
         isovalue: 等值面值（用于显示）
+        lang: 语言代码 ("zh" 或 "en")
         
     Returns:
         包含交互式 3D 查看器的 HTML 字符串
@@ -498,16 +518,21 @@ def create_li_deformation_viewer(
         # 8. 生成 HTML
         html = viewer._make_html()
         
+        # 多语言文本
+        mouse_hint = t("vis_mouse_hint", lang)
+        isovalue_label = t("vis_isovalue", lang)
+        deformation_label = t("vis_deformation_region", lang)
+        
         wrapper_html = f"""
         <div style="border: 2px solid #4a4a6a; border-radius: 8px; padding: 10px; background: #0d0d1a;">
             <div style="color: #aaa; font-size: 12px; margin-bottom: 5px; text-align: center;">
-                🖱️ 左键拖动旋转 | 滚轮缩放 | 右键平移
+                {mouse_hint}
             </div>
             {html}
             <div style="color: #888; font-size: 11px; margin-top: 5px; text-align: center;">
-                Li Deformation Factor | 等值面: {isovalue} &nbsp;
+                Li Deformation Factor | {isovalue_label}: {isovalue} &nbsp;
                 <span style="display: inline-block; width: 12px; height: 12px; background: {surface_color}; border-radius: 2px; vertical-align: middle;"></span>
-                <span style="color: {surface_color};"> 变形区域</span>
+                <span style="color: {surface_color};"> {deformation_label}</span>
             </div>
         </div>
         """
@@ -515,7 +540,8 @@ def create_li_deformation_viewer(
         return wrapper_html
         
     except Exception as e:
-        return f"<p style='color: red;'>加载 Li Deformation 可视化失败: {e}</p>"
+        error_msg = t("vis_load_li_deform_failed", lang)
+        return f"<p style='color: red;'>{error_msg}: {e}</p>"
 
 
 def find_esp_files(inference_dir: str) -> List[Dict[str, Optional[str]]]:
@@ -829,6 +855,7 @@ def create_esp_viewer(
     surface_opacity: float = 0.85,
     background_color: str = "#1a1a2e",
     show_extrema: bool = True,
+    lang: str = "zh",
 ) -> str:
     """
     创建 ESP (静电势) 映射在分子 vdW 表面上的可视化查看器。
@@ -848,14 +875,17 @@ def create_esp_viewer(
         surface_opacity: 表面透明度
         background_color: 背景颜色
         show_extrema: 是否显示 ESP 极值点
+        lang: 语言代码 ("zh" 或 "en")
         
     Returns:
         包含交互式 3D 查看器的 HTML 字符串
     """
     if not os.path.exists(density_cube_path):
-        return f"<p style='color: red;'>密度 Cube 文件不存在: {density_cube_path}</p>"
+        error_msg = t("vis_density_file_not_exist", lang)
+        return f"<p style='color: red;'>{error_msg}: {density_cube_path}</p>"
     if not os.path.exists(esp_cube_path):
-        return f"<p style='color: red;'>ESP Cube 文件不存在: {esp_cube_path}</p>"
+        error_msg = t("vis_esp_file_not_exist", lang)
+        return f"<p style='color: red;'>{error_msg}: {esp_cube_path}</p>"
     
     try:
         from skimage.measure import marching_cubes
@@ -920,17 +950,17 @@ def create_esp_viewer(
         
         # 蓝到白 (esp_normalized < 0.5)
         mask_low = esp_normalized < 0.5
-        t = esp_normalized[mask_low] * 2  # 0->0, 0.5->1
-        colors[mask_low, 0] = t  # R: 0->1
-        colors[mask_low, 1] = t  # G: 0->1
+        interp_factor = esp_normalized[mask_low] * 2  # 0->0, 0.5->1
+        colors[mask_low, 0] = interp_factor  # R: 0->1
+        colors[mask_low, 1] = interp_factor  # G: 0->1
         colors[mask_low, 2] = 1  # B: 1
         
         # 白到红 (esp_normalized >= 0.5)
         mask_high = ~mask_low
-        t = (esp_normalized[mask_high] - 0.5) * 2  # 0.5->0, 1->1
+        interp_factor = (esp_normalized[mask_high] - 0.5) * 2  # 0.5->0, 1->1
         colors[mask_high, 0] = 1  # R: 1
-        colors[mask_high, 1] = 1 - t  # G: 1->0
-        colors[mask_high, 2] = 1 - t  # B: 1->0
+        colors[mask_high, 1] = 1 - interp_factor  # G: 1->0
+        colors[mask_high, 2] = 1 - interp_factor  # B: 1->0
         
         # 转换为 Plotly 格式的颜色字符串
         vertex_colors = [f'rgb({int(c[0]*255)},{int(c[1]*255)},{int(c[2]*255)})' for c in colors]
@@ -1095,16 +1125,23 @@ def create_esp_viewer(
         </div>
         """
         
+        # 多语言文本
+        mouse_hint = t("vis_mouse_hint", lang)
+        esp_label = t("vis_esp_label", lang)
+        density_iso_label = t("vis_density_isovalue", lang)
+        red_positive = t("vis_red_positive", lang)
+        blue_negative = t("vis_blue_negative", lang)
+        
         wrapper_html = f"""
         <div style="border: 2px solid #4a4a6a; border-radius: 8px; padding: 10px; background: #0d0d1a;">
             <div style="color: #aaa; font-size: 12px; margin-bottom: 5px; text-align: center;">
-                🖱️ 左键拖动旋转 | 滚轮缩放 | 右键平移
+                {mouse_hint}
             </div>
             {plotly_html}
             <div style="color: #888; font-size: 11px; margin-top: 5px; text-align: center;">
-                静电势 (ESP) | 密度等值面: {density_isovalue} | 
-                <span style="color: #FF4444;">红</span>=正(亲核) | 
-                <span style="color: #4444FF;">蓝</span>=负(亲电)
+                {esp_label} | {density_iso_label}: {density_isovalue} | 
+                <span style="color: #FF4444;">{red_positive}</span> | 
+                <span style="color: #4444FF;">{blue_negative}</span>
             </div>
             {colorbar_html}
             {f'<div style="color: #888; font-size: 11px; margin-top: 3px; text-align: center;">{extrema_html}</div>' if extrema_html else ''}
@@ -1115,20 +1152,23 @@ def create_esp_viewer(
         
     except ImportError as e:
         missing_pkg = str(e).split("'")[-2] if "'" in str(e) else str(e)
+        missing_dep_label = t("vis_missing_dep", lang)
+        run_pip_label = t("vis_run_pip", lang)
         return f"""
         <div style="border: 2px solid #ff6666; border-radius: 8px; padding: 15px; background: #1a0d0d;">
             <p style='color: #ff6666; margin: 0;'>
-                <strong>缺少依赖包:</strong> {missing_pkg}
+                <strong>{missing_dep_label}:</strong> {missing_pkg}
             </p>
             <p style='color: #aaa; margin: 10px 0 0 0; font-size: 12px;'>
-                请运行: <code style="background: #333; padding: 2px 6px; border-radius: 3px;">pip install scikit-image scipy plotly</code>
+                {run_pip_label}: <code style="background: #333; padding: 2px 6px; border-radius: 3px;">pip install scikit-image scipy plotly</code>
             </p>
         </div>
         """
     except Exception as e:
         import traceback
         logger.error(f"ESP visualization error: {traceback.format_exc()}")
-        return f"<p style='color: red;'>加载 ESP 可视化失败: {e}</p>"
+        error_msg = t("vis_load_esp_failed", lang)
+        return f"<p style='color: red;'>{error_msg}: {e}</p>"
 
 
 def create_esp_viewer_fallback(
@@ -1143,15 +1183,18 @@ def create_esp_viewer_fallback(
     surface_opacity: float = 0.85,
     background_color: str = "#1a1a2e",
     show_extrema: bool = True,
+    lang: str = "zh",
 ) -> str:
     """
     ESP 可视化的后备方案（使用 py3Dmol，效果较简单）。
     当 scikit-image/plotly 不可用时使用。
     """
     if not os.path.exists(density_cube_path):
-        return f"<p style='color: red;'>密度 Cube 文件不存在: {density_cube_path}</p>"
+        error_msg = t("vis_density_file_not_exist", lang)
+        return f"<p style='color: red;'>{error_msg}: {density_cube_path}</p>"
     if not os.path.exists(esp_cube_path):
-        return f"<p style='color: red;'>ESP Cube 文件不存在: {esp_cube_path}</p>"
+        error_msg = t("vis_esp_file_not_exist", lang)
+        return f"<p style='color: red;'>{error_msg}: {esp_cube_path}</p>"
     
     try:
         with open(density_cube_path, 'r') as f:
@@ -1224,17 +1267,24 @@ def create_esp_viewer_fallback(
         
         html = viewer._make_html()
         
+        # 多语言文本
+        mouse_hint = t("vis_mouse_hint", lang)
+        esp_label = t("vis_esp_label", lang)
+        isovalue_label = t("vis_isovalue", lang)
+        positive_label = t("vis_positive_nucleophilic", lang)
+        negative_label = t("vis_negative_electrophilic", lang)
+        
         # 构建包装 HTML
         wrapper_html = f"""
         <div style="border: 2px solid #4a4a6a; border-radius: 8px; padding: 10px; background: #0d0d1a;">
             <div style="color: #aaa; font-size: 12px; margin-bottom: 5px; text-align: center;">
-                🖱️ 左键拖动旋转 | 滚轮缩放 | 右键平移
+                {mouse_hint}
             </div>
             {html}
             <div style="color: #888; font-size: 11px; margin-top: 5px; text-align: center;">
-                静电势 (ESP) | 等值面: ±{pos_iso:.4f} a.u. &nbsp;
-                <span style="color: #FF4444;">■</span> 正(亲核) &nbsp;
-                <span style="color: #4444FF;">■</span> 负(亲电)
+                {esp_label} | {isovalue_label}: ±{pos_iso:.4f} a.u. &nbsp;
+                <span style="color: #FF4444;">■</span> {positive_label} &nbsp;
+                <span style="color: #4444FF;">■</span> {negative_label}
             </div>
             {f'<div style="color: #888; font-size: 11px; margin-top: 3px; text-align: center;">{extrema_html}</div>' if extrema_html else ''}
         </div>
@@ -1245,7 +1295,8 @@ def create_esp_viewer_fallback(
     except Exception as e:
         import traceback
         logger.error(f"ESP visualization error: {traceback.format_exc()}")
-        return f"<p style='color: red;'>加载 ESP 可视化失败: {e}</p>"
+        error_msg = t("vis_load_esp_failed", lang)
+        return f"<p style='color: red;'>{error_msg}: {e}</p>"
 
 
 def create_structure_preview_html(db_path: str, max_structures: int = None) -> str:
