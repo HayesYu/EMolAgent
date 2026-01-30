@@ -31,16 +31,17 @@ from langchain_community.document_loaders import (
 from langchain_chroma import Chroma
 
 from emolagent.utils.paths import get_data_path
+from emolagent.utils.config import KnowledgeConfig
 
 # ==========================================
-# 常量定义
+# 常量定义（从配置文件加载）
 # ==========================================
 DEFAULT_CHROMA_DB_PATH = get_data_path("chroma_db")
 CHROMA_DB_PATH = os.getenv("EMOL_CHROMA_DB_PATH", DEFAULT_CHROMA_DB_PATH)
-LITERATURE_PATH = "/home/hayes/projects/ai4mol"
+LITERATURE_PATH = KnowledgeConfig.get_literature_path()
 INDEX_STATE_FILE = os.path.join(CHROMA_DB_PATH, "index_state.json")
 
-COLLECTION_NAME = "ai4mol_literature"
+COLLECTION_NAME = KnowledgeConfig.get_collection_name()
 
 
 def _clean_text(text: str | None) -> str:

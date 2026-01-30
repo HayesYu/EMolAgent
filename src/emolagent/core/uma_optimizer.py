@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import argparse
+import threading
 import numpy as np
 from ase import Atoms
 from ase.io import write
@@ -17,6 +18,10 @@ from tqdm import tqdm
 
 from emolagent.utils.logger import logger
 from emolagent.utils.paths import get_resource_path
+from emolagent.utils.config import ModelConfig, OutputConfig
+
+# 全局锁，用于保护 FAIRChem 模型加载（防止并发懒加载冲突）
+_MODEL_LOAD_LOCK = threading.Lock()
 
 # Optional import for SMILES processing
 try:
@@ -32,11 +37,11 @@ from fairchem.core.units.mlip_unit import load_predict_unit
 from fairchem.core.calculate.pretrained_mlip import get_isolated_atomic_energies
 
 # ==========================================
-# Default Configuration
+# Default Configuration（从配置文件加载）
 # ==========================================
-DEFAULT_CHECKPOINT = get_resource_path("models", "uma-m-1p1.pt")
-DEFAULT_WORKSPACE = os.path.abspath('out_li_clusters')
-DEFAULT_MODEL_NAME = "uma-m-1p1"
+DEFAULT_CHECKPOINT = ModelConfig.get_uma_checkpoint_path()
+DEFAULT_WORKSPACE = OutputConfig.get_uma_workspace()
+DEFAULT_MODEL_NAME = ModelConfig.get_uma_model_name()
 
 
 def sanitize_name(s: str) -> str:
@@ -153,12 +158,16 @@ def entry(
     if verbose:
         logger.info(f"Workdir: {workspace}\nInput: {active_input_db}\nOutput: {out_db_path}")
 
-    # 3. Model Loading
+    # 3. Model Loading (使用锁防止并发懒加载冲突)
     if verbose:
         logger.info("Loading FAIRChem model...")
-    atom_refs = get_isolated_atomic_energies(DEFAULT_MODEL_NAME, workspace)
-    predictor = load_predict_unit(checkpoint_path, "default", None, device, atom_refs)
-    calc = FAIRChemCalculator(predictor, task_name="omol")
+    
+    with _MODEL_LOAD_LOCK:
+        logger.debug(f"[UMA] Acquired model load lock for workspace: {workspace}")
+        atom_refs = get_isolated_atomic_energies(DEFAULT_MODEL_NAME, workspace)
+        predictor = load_predict_unit(checkpoint_path, "default", None, device, atom_refs)
+        calc = FAIRChemCalculator(predictor, task_name="omol")
+        logger.debug(f"[UMA] Released model load lock, model ready")
 
     # 4. Optimization Loop
     if not os.path.exists(active_input_db):

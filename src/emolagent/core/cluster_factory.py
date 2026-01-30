@@ -18,16 +18,17 @@ from ase.io import write
 from tqdm import tqdm
 
 from emolagent.utils.logger import logger
+from emolagent.utils.config import MoleculeConfig
 from emolagent.core import uma_optimizer
 
 # Import the build_cluster function
 from emoles.build.cluster import build_cluster
 
 # ==========================================
-# Default Constants
+# Default Constants（从配置文件加载）
 # ==========================================
-DEFAULT_DME_SMILES = "COCCOC:DME"
-DEFAULT_FSI_SMILES = "F[S](=O)(=O)[N-][S](=O)(=O)F:FSI"
+DEFAULT_DME_SMILES = MoleculeConfig.get_default_dme_smiles()
+DEFAULT_FSI_SMILES = MoleculeConfig.get_default_fsi_smiles()
 
 
 # ==========================================

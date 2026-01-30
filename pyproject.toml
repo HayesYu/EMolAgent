@@ -34,6 +34,9 @@ dependencies = [
     "pypdf",
     "unstructured",
     "python-pptx",
+    "scikit-image",
+    "scipy",
+    "plotly",
 ]
 
 [project.optional-dependencies]

@@ -9,6 +9,9 @@ data/chat_app.db
 # 忽略用户输出目录
 users/
 
+# 忽略任务槽锁文件目录
+.task_slots/
+
 # 忽略日志文件
 logs/
 
