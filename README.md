@@ -95,7 +95,7 @@ conda activate EMolAgent
 ```bash
 pip install fairchem-core==2.12.0
 pip install torch_geometric
-pip install torch_scatter torch_sparse torch_cluster torch_spline_conv pyg_lib -f https://data.pyg.org/whl/torch-2.8.0+cu128. html
+pip install torch_scatter torch_sparse torch_cluster torch_spline_conv pyg_lib -f https://data.pyg.org/whl/torch-2.8.0+cu128.html
 ```
 
 ### 3. 克隆 EMolAgent
@@ -141,7 +141,7 @@ cd ..
 ### 7. 安装 dftio
 
 ```bash
-git clone https://github.com/deepmodeling/dftio. git
+git clone https://github.com/deepmodeling/dftio.git
 cd dftio/
 ```
 
@@ -226,7 +226,7 @@ pip install -e .
 
 ### 11. 下载模型文件
 
-1. 前往 [Hugging Face UMA](https://huggingface.co/facebook/UMA) 申请获得 `uma-m-1p1. pt` 模型使用权
+1. 前往 [Hugging Face UMA](https://huggingface.co/facebook/UMA) 申请获得 `uma-m-1p1.pt` 模型使用权
 
 2. 将 `uma-m-1p1.pt` 放置于 `EMolAgent/resources/models/` 目录下
 
