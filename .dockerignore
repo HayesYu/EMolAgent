@@ -1,0 +1,82 @@
+# EMolAgent Docker 构建忽略文件
+# 这些文件不会被复制到 Docker 构建上下文中
+
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+*.egg
+.eggs/
+
+# 运行时数据目录（通过卷挂载）
+data/
+users/
+logs/
+.task_slots/
+
+# 模型文件（通过卷挂载）
+resources/models/
+
+# 虚拟环境
+.venv/
+venv/
+ENV/
+env/
+
+# IDE 和编辑器
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# 测试和覆盖率
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# 构建产物
+build/
+dist/
+*.whl
+
+# 文档
+docs/_build/
+
+# 本地配置（如果有敏感信息）
+.env
+.env.local
+*.local.yaml
+
+# Docker 相关（避免递归）
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# 临时文件
+*.tmp
+*.temp
+*.log
+*.bak
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+
+# mypy
+.mypy_cache/
+
+# 其他
+*.md
+!README.md
+LICENSE

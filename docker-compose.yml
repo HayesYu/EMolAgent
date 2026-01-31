@@ -1,0 +1,86 @@
+# EMolAgent Docker Compose 配置
+# 
+# 使用方法:
+#   1. 设置环境变量:
+#      export GOOGLE_API_KEY="your-api-key"
+#      export MULTIWFN_PATH="/path/to/Multiwfn"      # 可选
+#      export LITERATURE_PATH="/path/to/literature"  # 可选
+#   
+#   2. 启动服务:
+#      docker-compose up -d
+#
+#   3. 访问应用:
+#      http://localhost:8501
+
+services:
+  emolagent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: emolagent:latest
+    container_name: emolagent
+    
+    # 端口映射
+    ports:
+      - "8501:8501"
+    
+    # 卷挂载
+    volumes:
+      # ========== 必须挂载（数据持久化） ==========
+      - ./data:/app/data                              # ChromaDB + SQLite 数据
+      - ./users:/app/users                            # 用户任务输出
+      - ./logs:/app/logs                              # 日志文件
+      - ./resources/models:/app/resources/models      # 模型文件（必须预先放置）
+      
+      # ========== 可选挂载 ==========
+      # 自定义配置文件
+      - ./config/settings.yaml:/app/config/settings.yaml:ro
+      
+      # Multiwfn（ESP 可视化需要）
+      # 如果未设置 MULTIWFN_PATH，则不挂载
+      - ${MULTIWFN_PATH:-/dev/null}:/opt/Multiwfn:ro
+      
+      # RAG 文献库
+      # 如果未设置 LITERATURE_PATH，则不挂载
+      - ${LITERATURE_PATH:-/dev/null}:/app/literature:ro
+    
+    # 环境变量
+    environment:
+      # 必需 - Google API Key
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:?GOOGLE_API_KEY is required}
+      
+      # Multiwfn 环境变量
+      - Multiwfnpath=/opt/Multiwfn
+      
+      # 可选 - 自定义配置
+      - EMOLAGENT_ROOT=/app
+      - EMOL_CHROMA_DB_PATH=/app/data/chroma_db
+    
+    # 系统限制（Multiwfn 需要 unlimited stack）
+    ulimits:
+      stack: -1
+    
+    # GPU 支持
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    
+    # 重启策略
+    restart: unless-stopped
+    
+    # 健康检查
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+# 网络配置（可选，用于多容器部署）
+networks:
+  default:
+    name: emolagent-network
