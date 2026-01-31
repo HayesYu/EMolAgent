@@ -11,7 +11,8 @@ EMolAgent 是一个基于大语言模型的计算化学 AI 助手，集成分子
   - [中英文双语支持](#中英文双语支持)
   - [项目结构](#项目结构)
   - [环境要求](#环境要求)
-  - [安装步骤](#安装步骤)
+  - [Docker 快速部署](#docker-快速部署)
+  - [手动安装步骤（推荐）](#手动安装步骤推荐)
     - [1. 创建 Conda 环境](#1-创建-conda-环境)
     - [2. 安装基础依赖](#2-安装基础依赖)
     - [3. 克隆 EMolAgent](#3-克隆-emolagent)
@@ -81,7 +82,105 @@ EMolAgent/
 - Conda 包管理器
 - Linux 64bit 系统
 
-## 安装步骤
+## Docker 快速部署
+
+使用 Docker 可以快速部署 EMolAgent，无需手动安装复杂的依赖环境。
+
+### 前置要求
+
+- Docker 和 Docker Compose
+- NVIDIA GPU 驱动
+- [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
+
+```bash
+# 安装 NVIDIA Container Toolkit（Ubuntu）
+sudo apt-get update
+sudo apt-get install -y nvidia-container-toolkit
+sudo systemctl restart docker
+```
+
+### 快速开始
+
+#### 1. 克隆项目
+
+```bash
+git clone https://github.com/HayesYu/EMolAgent.git
+cd EMolAgent
+```
+
+#### 2. 准备模型文件
+
+```bash
+# 创建模型目录
+mkdir -p resources/models
+
+# 将模型文件放入 resources/models/ 目录：
+# - uma-m-1p1.pt（从 https://huggingface.co/facebook/UMA 申请）
+# - 暂未发布（电子结构推理模型）
+```
+
+#### 3. 配置环境变量
+
+```bash
+# 必需：Google API Key
+export GOOGLE_API_KEY="your-google-api-key"
+
+# 必需：Multiwfn
+# 从 http://sobereva.com/multiwfn/ 下载 Linux 64bit noGUI 版本，具体配置详见手动安装部分
+export MULTIWFN_PATH="/path/to/Multiwfn_2026.1.12_bin_Linux_noGUI"
+
+# 可选：RAG 文献库目录
+export LITERATURE_PATH="/path/to/your/literature"
+```
+
+#### 4. 构建并启动
+
+```bash
+# 构建镜像（首次需要较长时间）
+docker-compose build
+
+# 启动服务
+docker-compose up -d
+
+# 查看日志
+docker-compose logs -f
+```
+
+#### 5. 访问应用
+
+浏览器打开 http://localhost:8501
+
+### Docker 挂载说明
+
+| 挂载路径 | 用途 | 必需 |
+|---------|------|------|
+| `./data` | ChromaDB + SQLite 数据 | 是（自动创建） |
+| `./users` | 用户任务输出 | 是（自动创建） |
+| `./logs` | 日志文件 | 是（自动创建） |
+| `./resources/models` | 模型文件 | 是（需预先放置） |
+| `./config/settings.yaml` | 自定义配置 | 否 |
+| `$MULTIWFN_PATH` | Multiwfn 二进制 | 是（需预先放置） |
+| `$LITERATURE_PATH` | RAG 文献库 | 否 |
+
+### 常用 Docker 命令
+
+```bash
+# 停止服务
+docker-compose down
+
+# 重启服务
+docker-compose restart
+
+# 查看容器状态
+docker-compose ps
+
+# 进入容器调试
+docker-compose exec emolagent bash
+```
+
+---
+
+## 手动安装步骤（推荐）
 
 ### 1. 创建 Conda 环境
 

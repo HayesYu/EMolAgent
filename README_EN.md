@@ -11,7 +11,8 @@ EMolAgent is an LLM-based computational chemistry AI assistant that integrates m
   - [Chinese/English Bilingual Support](#chineseenglish-bilingual-support)
   - [Project Structure](#project-structure)
   - [Requirements](#requirements)
-  - [Installation](#installation)
+  - [Docker Quick Deploy](#docker-quick-deploy)
+  - [Manual Installation (Recommended)](#manual-installation-recommended)
     - [1. Create Conda Environment](#1-create-conda-environment)
     - [2. Install Base Dependencies](#2-install-base-dependencies)
     - [3. Clone EMolAgent](#3-clone-emolagent)
@@ -81,7 +82,105 @@ EMolAgent/
 - Conda package manager
 - Linux 64bit
 
-## Installation
+## Docker Quick Deploy
+
+Docker allows quick deployment of EMolAgent without manually installing complex dependencies.
+
+### Prerequisites
+
+- Docker and Docker Compose
+- NVIDIA GPU driver
+- [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
+
+```bash
+# Install NVIDIA Container Toolkit (Ubuntu)
+sudo apt-get update
+sudo apt-get install -y nvidia-container-toolkit
+sudo systemctl restart docker
+```
+
+### Quick Start
+
+#### 1. Clone the Project
+
+```bash
+git clone https://github.com/HayesYu/EMolAgent.git
+cd EMolAgent
+```
+
+#### 2. Prepare Model Files
+
+```bash
+# Create models directory
+mkdir -p resources/models
+
+# Place model files in resources/models/:
+# - uma-m-1p1.pt (apply at https://huggingface.co/facebook/UMA)
+# - Not released yet (electronic structure inference model)
+```
+
+#### 3. Configure Environment Variables
+
+```bash
+# Required: Google API Key
+export GOOGLE_API_KEY="your-google-api-key"
+
+# Required: Multiwfn
+# Download Linux 64bit noGUI version from http://sobereva.com/multiwfn/ (See the manual installation section for details.)
+export MULTIWFN_PATH="/path/to/Multiwfn_2026.1.12_bin_Linux_noGUI"
+
+# Optional: RAG literature directory
+export LITERATURE_PATH="/path/to/your/literature"
+```
+
+#### 4. Build and Start
+
+```bash
+# Build image (takes time on first run)
+docker-compose build
+
+# Start service
+docker-compose up -d
+
+# View logs
+docker-compose logs -f
+```
+
+#### 5. Access Application
+
+Open http://localhost:8501 in your browser
+
+### Docker Volume Mounts
+
+| Mount Path | Purpose | Required |
+|------------|---------|----------|
+| `./data` | ChromaDB + SQLite data | Yes (auto-created) |
+| `./users` | User task output | Yes (auto-created) |
+| `./logs` | Log files | Yes (auto-created) |
+| `./resources/models` | Model files | Yes (must be pre-placed) |
+| `./config/settings.yaml` | Custom config | No |
+| `$MULTIWFN_PATH` | Multiwfn binary | Yes (must be pre-placed) |
+| `$LITERATURE_PATH` | RAG literature | No |
+
+### Common Docker Commands
+
+```bash
+# Stop service
+docker-compose down
+
+# Restart service
+docker-compose restart
+
+# Check container status
+docker-compose ps
+
+# Enter container for debugging
+docker-compose exec emolagent bash
+```
+
+---
+
+## Manual Installation (Recommended)
 
 ### 1. Create Conda Environment
 
