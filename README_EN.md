@@ -116,7 +116,8 @@ mkdir -p resources/models
 
 # Place model files in resources/models/:
 # - uma-m-1p1.pt (apply at https://huggingface.co/facebook/UMA)
-# - Not released yet (electronic structure inference model)
+# - Electronic structure inference weight file (You can obtain it from https://drive.google.com/drive/folders/17u1Ex9FNi0lza2Kc0vjP4fU-NssIlO-2?usp=drive_link)
+# This version is for testing purposes only; the latest version has not yet been released.
 ```
 
 #### 3. Configure Environment Variables
@@ -329,8 +330,10 @@ pip install -e .
 
 2. Place `uma-m-1p1.pt` in `EMolAgent/resources/models/`
 
-3. Place other model weight files in `EMolAgent/resources/models/`
-   > **Note**: These files are not yet publicly available; please wait for future updates
+3. Apply for electronic structure inference weight file access at [Google Drive nnenv](https://drive.google.com/drive/folders/17u1Ex9FNi0lza2Kc0vjP4fU-NssIlO-2?usp=drive_link)
+   > **Note**: This file is for testing purposes only; the latest version has not yet been released.
+
+4. Place electronic structure inference weight file in `EMolAgent/resources/models/`
 
 ## Configuration
 
