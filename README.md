@@ -116,7 +116,7 @@ mkdir -p resources/models
 
 # 将模型文件放入 resources/models/ 目录：
 # - uma-m-1p1.pt（从 https://huggingface.co/facebook/UMA 申请）
-# - 暂未发布（电子结构推理模型）
+# - 电子结构推理权重文件（从 https://drive.google.com/drive/folders/17u1Ex9FNi0lza2Kc0vjP4fU-NssIlO-2?usp=drive_link 获取，该版本仅供测试使用，最新版本暂未发布）
 ```
 
 #### 3. 配置环境变量
@@ -329,8 +329,10 @@ pip install -e .
 
 2. 将 `uma-m-1p1.pt` 放置于 `EMolAgent/resources/models/` 目录下
 
-3. 将其他模型权重文件放置于 `EMolAgent/resources/models/`
-   > **注意**：该文件暂时未给出，请等后续更新
+3. 前往 [Google Drive nnenv](https://drive.google.com/drive/folders/17u1Ex9FNi0lza2Kc0vjP4fU-NssIlO-2?usp=drive_link) 获取电子结构推理权重文件
+   > **注意**：该文件仅供测试使用，最新版本暂未发布
+
+4. 将电子结构推理权重文件放置于 `EMolAgent/resources/models/`
 
 ## 配置
 
