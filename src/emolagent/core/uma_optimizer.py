@@ -50,6 +50,29 @@ def sanitize_name(s: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", s).strip("_") or "unnamed"
 
 
+def _coerce_int(x, default=None):
+    """
+    安全的整数转换，处理 int/float/np scalars/strings 等各种类型。
+    
+    Args:
+        x: 要转换的值
+        default: 转换失败时返回的默认值
+        
+    Returns:
+        转换后的整数，或默认值
+    """
+    if x is None:
+        return default
+    try:
+        if isinstance(x, (np.integer,)):
+            return int(x)
+        if isinstance(x, (np.floating,)):
+            return int(float(x))
+        return int(float(x))
+    except Exception:
+        return default
+
+
 def smiles_to_atoms(smiles: str) -> Atoms:
     """将 SMILES 字符串转换为 ASE Atoms 对象。"""
     if not RDKIT_AVAILABLE:
@@ -104,6 +127,92 @@ def prepare_input_source(workspace: str, input_db: str = None, smiles_list: list
         return os.path.join(workspace, 'all.db')
 
     return input_db
+
+
+def _merge_row_metadata(row, atoms: Atoms) -> dict:
+    """
+    合并 ASE DB row 的元数据。
+    
+    ASE DB rows 可以在多个位置存储元数据：
+      - row.key_value_pairs
+      - row.data (dict)
+      - atoms.info
+    
+    重要：structures.db 中 data['charge'] 是正确的，但 key_value_pairs['charge'] 
+    可能是错误的（常为1）。因此合并时必须让 row.data 覆盖 row.key_value_pairs。
+    
+    合并顺序：
+      1. key_value_pairs first
+      2. row.data second (override kvp; especially for 'charge')
+      3. atoms.info last fallback (only fill missing keys)
+    """
+    meta = {}
+
+    # 1. key_value_pairs first
+    try:
+        if getattr(row, "key_value_pairs", None):
+            meta.update(row.key_value_pairs)
+    except Exception:
+        pass
+
+    # 2. row.data second (override kvp; especially for 'charge')
+    try:
+        if getattr(row, "data", None):
+            meta.update(row.data)
+    except Exception:
+        pass
+
+    # 3. atoms.info last fallback (only fill missing keys)
+    try:
+        if isinstance(getattr(atoms, "info", None), dict):
+            for k, v in atoms.info.items():
+                if k not in meta:
+                    meta[k] = v
+    except Exception:
+        pass
+
+    return meta
+
+
+def _infer_charge(atoms: Atoms, meta: dict) -> int:
+    """
+    推断分子/团簇的电荷。
+    
+    电荷优先级：
+      1) meta['charge'] if present (现在正确优先使用 row.data['charge'])
+      2) 从阴离子数量键推断: n_anion, n_anion_total, n_anions, n_anion_tot
+    
+    推断规则（单体 vs 团簇）：
+      - 如果结构包含 Li: charge = 1 - n_anion (Li+ 团簇惯例)
+      - 否则: charge = 0 - n_anion (单体惯例: 溶剂 0, 阴离子 -1)
+    
+    回退（如果没有 n_anion 信息）：
+      - 包含 Li -> +1
+      - 否则 -> 0
+    """
+    # 1) 如果 meta 中有 charge，直接使用
+    if "charge" in meta and meta["charge"] is not None:
+        ch = _coerce_int(meta["charge"], default=None)
+        if ch is not None:
+            return int(ch)
+
+    # 2) 尝试从阴离子数量推断
+    n_anion = None
+    for key in ("n_anion", "n_anion_total", "n_anions", "n_anion_tot"):
+        if key in meta and meta[key] is not None:
+            n_anion = _coerce_int(meta[key], default=None)
+            if n_anion is not None:
+                break
+
+    has_li = ("Li" in atoms.get_chemical_symbols())
+
+    if n_anion is not None:
+        # Li+ 团簇: charge = 1 - n_anion
+        # 单体: charge = 0 - n_anion
+        return int((1 - n_anion) if has_li else (0 - n_anion))
+
+    # 3) 回退: Li -> +1, 否则 -> 0
+    return int(1 if has_li else 0)
 
 
 def entry(
@@ -180,59 +289,67 @@ def entry(
         if show_progress:
             rows = tqdm(rows, total=total, desc="Optimizing", unit="mol")
 
+        def _log(msg: str):
+            """日志输出，兼容进度条"""
+            if show_progress:
+                tqdm.write(msg)
+            else:
+                logger.info(msg)
+
         for row in rows:
             atoms = row.toatoms()
-            kvp = row.key_value_pairs.copy()
-
-            # --- Core Logic: Charge Calculation & Type Enforcing ---
+            
+            # --- Core Logic: Charge Calculation (优先使用 row.data['charge']) ---
+            # 关键修复：row.data['charge'] 是正确的，row.key_value_pairs['charge'] 可能是错误的
             charge = None
+            try:
+                # 尝试从 row.data 获取 charge（优先级最高）
+                if hasattr(row, 'data') and row.data:
+                    charge = row.data.get('charge', None)
+            except Exception:
+                pass
+            
+            if charge is None:
+                # row.data 中没有 charge，使用完整的推断逻辑
+                logger.debug(f"Row {row.id}: No charge in row.data, inferring...")
+                meta = _merge_row_metadata(row, atoms)
+                charge = _infer_charge(atoms, meta)
+            else:
+                # row.data 中有 charge，安全转换为 int
+                charge = _coerce_int(charge, default=None)
+                if charge is None:
+                    meta = _merge_row_metadata(row, atoms)
+                    charge = _infer_charge(atoms, meta)
+                else:
+                    meta = _merge_row_metadata(row, atoms)
+            
+            # spin 永远是 1，不从任何来源读取/改变
             spin = 1
             
-            try:
-                if 'charge' in kvp:
-                    raw_val = kvp['charge']
-                    if raw_val is not None:
-                        charge = int(float(raw_val))
-                
-                if charge is None:
-                    if 'n_anion' in kvp and kvp['n_anion'] is not None:
-                        n_anion = int(float(kvp['n_anion']))
-                        charge = int(1 - n_anion)
-                    else:
-                        charge = 1
-                
-                spin = int(kvp.get('spin', 1)) if kvp.get('spin') is not None else 1
-
-            except Exception as e:
-                logger.error(f"Row {row.id}: Charge parsing failed: {e}")
-                charge, spin = 1, 1
-
-            # Set properties
+            # 确保 charge 和 spin 是整数类型
+            charge = int(charge)
+            spin = int(spin)
+            
+            # 设置属性到 atoms.info 和 meta
             atoms.info['charge'] = charge
             atoms.info['spin'] = spin
-            kvp['charge'] = charge
-            kvp['spin'] = spin
+            meta['charge'] = charge
+            meta['spin'] = spin
+
+            # --- Determine name early ---
+            raw_name = meta.get('xyz_file', None) or meta.get('name', None) or f"id_{row.id}"
+            raw_name = os.path.splitext(str(raw_name))[0]
+            base_name = sanitize_name(raw_name)
+
+            # 每个结构优化前打印 charge/spin
+            _log(f"[UMA] Optimizing: {base_name} | charge={charge} spin={spin}")
 
             # --- Optimization ---
             atoms.calc = calc
-
-            # Determine name
-            if 'xyz_file' in kvp:
-                raw_name = kvp['xyz_file'].strip('.xyz')
-            elif 'name' in kvp:
-                raw_name = kvp['name']
-            else:
-                raw_name = f"id_{row.id}"
-
-            base_name = sanitize_name(raw_name)
             traj_path = os.path.join(traj_dir, f"{base_name}.traj")
 
             try:
                 logfile = '-' if (verbose and not show_progress) else None
-
-                if verbose and show_progress:
-                    tqdm.write(f"--- Opt: {base_name} (Q={charge}) ---")
-
                 opt = LBFGS(atoms, trajectory=traj_path, logfile=logfile)
                 opt.run(fmax=fmax, steps=max_steps)
 
@@ -240,15 +357,11 @@ def entry(
                 out_xyz = os.path.join(out_xyz_dir, f"{base_name}.xyz")
                 write(out_xyz, atoms)
 
-                atoms.calc = None
-                tgt_db.write(atoms, data=kvp, **kvp)
+                atoms.calc = None  # detach calculator before storing
+                tgt_db.write(atoms, data=meta, **meta)
 
             except Exception as e:
-                msg = f"[Error] {base_name}: {e}"
-                if show_progress:
-                    tqdm.write(msg)
-                else:
-                    logger.error(msg)
+                _log(f"[Error] {base_name}: {e}")
 
     return out_db_path
 

@@ -9,8 +9,10 @@ import re
 import argparse
 import shutil
 import traceback
+import random
+import itertools
 from pathlib import Path
-from typing import List, Dict, Tuple, Optional, Union, Any
+from typing import List, Dict, Tuple, Optional, Union, Any, Generator
 from contextlib import ExitStack
 from ase import Atoms
 from ase.db import connect
@@ -19,10 +21,21 @@ from tqdm import tqdm
 
 from emolagent.utils.logger import logger
 from emolagent.utils.config import MoleculeConfig
-from emolagent.core import uma_optimizer
 
 # Import the build_cluster function
 from emoles.build.cluster import build_cluster
+
+# UMA Import (Optional/Safe)
+try:
+    from emolagent.core import uma_optimizer
+    UMA_AVAILABLE = True
+except ImportError:
+    UMA_AVAILABLE = False
+    uma_optimizer = None
+
+# RDKit for Fallback (when UMA is not available or disabled)
+from rdkit import Chem
+from rdkit.Chem import AllChem
 
 # ==========================================
 # Default Constants（从配置文件加载）
@@ -34,6 +47,36 @@ DEFAULT_FSI_SMILES = MoleculeConfig.get_default_fsi_smiles()
 # ==========================================
 # Helper Functions
 # ==========================================
+
+def _fallback_smiles_to_atoms(smiles: str) -> Atoms:
+    """
+    Lightweight fallback to convert SMILES to ASE Atoms without UMA.
+    Used when use_uma=False or UMA is not available.
+    """
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        raise ValueError(f"Invalid SMILES: {smiles}")
+    mol = Chem.AddHs(mol)
+    # Basic embedding
+    res = AllChem.EmbedMolecule(mol, AllChem.ETKDG())
+    if res == -1:
+        AllChem.EmbedMolecule(mol, AllChem.ETKDG(useRandomCoords=True))
+    try:
+        AllChem.UFFOptimizeMolecule(mol)
+    except:
+        pass
+
+    # Convert to ASE Atoms
+    conf = mol.GetConformer()
+    positions = []
+    symbols = []
+    for atom in mol.GetAtoms():
+        pos = conf.GetAtomPosition(atom.GetIdx())
+        positions.append([pos.x, pos.y, pos.z])
+        symbols.append(atom.GetSymbol())
+
+    return Atoms(symbols=symbols, positions=positions)
+
 
 def sanitize_filename(filename: str, max_length: int = 100) -> str:
     """Sanitize string to be safe for filenames."""
@@ -75,11 +118,49 @@ def load_db_entries(db_path: str, show_progress: bool = True) -> List[Dict]:
     return entries
 
 
-def optimize_monomers(entries: List[Dict], prefix: str, root_workspace: str, device: str) -> List[Dict]:
+def optimize_monomers(
+        entries: List[Dict],
+        prefix: str,
+        root_workspace: str,
+        device: str,
+        use_uma: bool = True
+) -> List[Dict]:
     """
-    Takes a list of raw entries (from SMILES), creates a temp DB,
-    optimizes them via UMA, and returns the optimized entries.
+    Prepare monomers.
+    If use_uma is True and UMA is available -> Run UMA optimization.
+    Else -> Convert SMILES to Atoms using lightweight RDKit fallback.
     """
+    # --- Branch 1: NO UMA (Fast Path / Fallback) ---
+    if not use_uma or not UMA_AVAILABLE:
+        if use_uma and not UMA_AVAILABLE:
+            logger.warning(f"UMA requested but not installed. Falling back to basic RDKit embedding for {prefix}.")
+        else:
+            logger.info(f"UMA skipped for {prefix}. Using basic RDKit embedding.")
+
+        processed_entries = []
+        for ent in entries:
+            atoms_obj = ent['atoms']
+            # If input is string (SMILES), convert it
+            if isinstance(atoms_obj, str):
+                try:
+                    atoms_obj = _fallback_smiles_to_atoms(atoms_obj)
+                except Exception as e:
+                    logger.error(f"  Error converting {ent['name']}: {e}")
+                    continue
+
+            # Tag info
+            atoms_obj.info['n_anion'] = 1 if prefix.lower() == "anion" else 0
+
+            processed_entries.append({
+                'id': ent['id'],
+                'name': ent['name'],
+                'atoms': atoms_obj,
+                'kvp': ent.get('kvp', {}),
+                'data': ent.get('data', {})
+            })
+        return processed_entries
+
+    # --- Branch 2: USE UMA (Optimization Path) ---
     logger.info(f"\n[Pre-Optimization] detected SMILES input for {prefix}. Optimizing monomers with UMA...")
 
     temp_workspace = os.path.join(root_workspace, f"temp_opt_{prefix.lower()}")
@@ -95,7 +176,11 @@ def optimize_monomers(entries: List[Dict], prefix: str, root_workspace: str, dev
             atoms_obj = ent['atoms']
             if isinstance(atoms_obj, str):
                 try:
-                    atoms_obj = uma_optimizer.smiles_to_atoms(atoms_obj)
+                    # Use UMA's internal converter if available, or fallback
+                    if hasattr(uma_optimizer, 'smiles_to_atoms'):
+                        atoms_obj = uma_optimizer.smiles_to_atoms(atoms_obj)
+                    else:
+                        atoms_obj = _fallback_smiles_to_atoms(atoms_obj)
                 except Exception as e:
                     logger.error(f"  Error embedding {ent['name']}: {e}")
                     continue
@@ -114,6 +199,13 @@ def optimize_monomers(entries: List[Dict], prefix: str, root_workspace: str, dev
         verbose=False,
         show_progress=True
     )
+
+    if optimized_db_path is None:
+        optimized_db_path = os.path.join(temp_workspace, "optimized_all.db")
+
+    if not os.path.exists(optimized_db_path):
+        logger.warning(f"Optimized DB not found for {prefix}. Using input structures.")
+        return load_db_entries(input_db_path, show_progress=False)
 
     optimized_entries = load_db_entries(optimized_db_path, show_progress=False)
 
@@ -150,8 +242,9 @@ def normalize_input_data(source: Union[str, List[str], List[Dict], None],
                          prefix: str,
                          show_progress: bool,
                          workspace: str,
-                         device: str) -> List[Dict]:
-    """Normalize input data. If SMILES, optimize them first."""
+                         device: str,
+                         use_uma: bool = True) -> List[Dict]:
+    """Normalize input data. If SMILES, optimize them first (or use RDKit fallback if use_uma=False)."""
     if source is None:
         return []
 
@@ -177,12 +270,133 @@ def normalize_input_data(source: Union[str, List[str], List[Dict], None],
                 smiles_batch.append(item)
         if smiles_batch:
             raw_entries = parse_smiles_input(smiles_batch, prefix)
-            optimized_entries = optimize_monomers(raw_entries, prefix, workspace, device)
+            optimized_entries = optimize_monomers(raw_entries, prefix, workspace, device, use_uma)
             all_entries.extend(optimized_entries)
         return all_entries
 
     return []
 
+
+# ==========================================
+# Combinatorial Logic for Mixed Solvents
+# ==========================================
+
+def integer_partitions(target: int, k: int, min_val: int = 1) -> Generator[Tuple[int, ...], None, None]:
+    """Generate all ways to sum to 'target' using 'k' integers, each >= min_val."""
+    if k == 1:
+        if target >= min_val:
+            yield (target,)
+        return
+
+    upper_bound = target - (k - 1) * min_val
+    for i in range(min_val, upper_bound + 1):
+        for tail in integer_partitions(target - i, k - 1, min_val):
+            yield (i,) + tail
+
+
+def plan_mixtures(
+        solvents_pool: List[Dict],
+        anions_pool: List[Dict],
+        mix_n: int,
+        num_mixtures: int,
+        target_totals: Tuple[int, ...],
+        anion_counts: Tuple[int, ...],
+        seed: int = 42
+) -> List[Dict]:
+    """
+    Generates a build plan for mixed solvents.
+    
+    Args:
+        solvents_pool: List of solvent entries
+        anions_pool: List of anion entries
+        mix_n: Number of different solvents in each mixture
+        num_mixtures: Max random solvent combinations to sample
+        target_totals: Allowed total coordination numbers (e.g., (4, 5))
+        anion_counts: Allowed anion counts (e.g., (0, 1, 2))
+        seed: Random seed for reproducibility
+    """
+    import math
+    
+    plan = []
+    random.seed(seed)
+
+    if mix_n > len(solvents_pool):
+        return []
+
+    n_total_combos = math.comb(len(solvents_pool), mix_n)
+
+    solvent_combinations = []
+    if mix_n == 1:
+        solvent_combinations = [(s,) for s in solvents_pool]
+    elif n_total_combos <= num_mixtures * 2:
+        solvent_combinations = list(itertools.combinations(solvents_pool, mix_n))
+    else:
+        seen = set()
+        attempts = 0
+        while len(solvent_combinations) < num_mixtures and attempts < num_mixtures * 10:
+            combo = tuple(sorted(random.sample(solvents_pool, mix_n), key=lambda x: x['name']))
+            combo_names = tuple(s['name'] for s in combo)
+            if combo_names not in seen:
+                seen.add(combo_names)
+                solvent_combinations.append(combo)
+            attempts += 1
+
+    for solvents_tuple in solvent_combinations:
+        current_anions_loop = anions_pool if anions_pool else [None]
+
+        for anion_entry in current_anions_loop:
+            for total_coord in target_totals:
+                valid_anion_counts = [ac for ac in anion_counts if ac <= total_coord]
+                if not anion_entry:
+                    valid_anion_counts = [0]
+
+                for n_anion in valid_anion_counts:
+                    n_solvent_total = total_coord - n_anion
+
+                    if n_solvent_total < mix_n:
+                        continue
+
+                    partitions = list(integer_partitions(n_solvent_total, mix_n, min_val=1))
+
+                    for p in partitions:
+                        ligands_def = []
+                        for idx, s_ent in enumerate(solvents_tuple):
+                            ligands_def.append({
+                                'type': 'solvent',
+                                'entry': s_ent,
+                                'count': p[idx]
+                            })
+
+                        if anion_entry and n_anion > 0:
+                            ligands_def.append({
+                                'type': 'anion',
+                                'entry': anion_entry,
+                                'count': n_anion
+                            })
+
+                        charge = 1 - n_anion
+                        if n_anion == 0:
+                            cat = "SSIP"
+                        elif n_anion == 1:
+                            cat = "CIP"
+                        else:
+                            cat = "AGG"
+
+                        plan.append({
+                            'category': cat,
+                            'ligands': ligands_def,
+                            'total_coord': total_coord,
+                            'n_anion_total': n_anion,
+                            'charge': charge,
+                            'spin': 1,
+                            'mix_type': f"Mix-{mix_n}"
+                        })
+    return plan
+
+
+# ==========================================
+# Original Plan (Single Solvent)
+# ==========================================
 
 def plan_combinations(
         solvents: List[Dict],
@@ -259,12 +473,118 @@ def ensure_dirs(root: Path) -> Dict[str, Dict[str, Path]]:
 
 def compose_filename(ion: str, solvent_name: str, anion_name: Optional[str],
                      n_solv: int, n_anion: int, category: str) -> str:
+    """Compose filename for single-solvent clusters."""
     s = sanitize_filename(solvent_name)
     if n_anion == 0:
         return f"{ion}_{category}_S-{s}_ns-{n_solv}.xyz"
     else:
         a = sanitize_filename(anion_name)
         return f"{ion}_{category}_S-{s}_ns-{n_solv}_A-{a}_na-{n_anion}.xyz"
+
+
+def compose_filename_mixture(ion: str, plan_item: Dict) -> str:
+    """Compose filename for mixed-solvent clusters."""
+    parts = [ion, plan_item['category']]
+
+    solv_idx = 1
+    for lig in plan_item['ligands']:
+        if lig['type'] == 'solvent':
+            name = sanitize_filename(lig['entry']['name'], max_length=30)
+            parts.append(f"S{solv_idx}-{name}_n{solv_idx}-{lig['count']}")
+            solv_idx += 1
+
+    for lig in plan_item['ligands']:
+        if lig['type'] == 'anion':
+            name = sanitize_filename(lig['entry']['name'], max_length=30)
+            parts.append(f"A-{name}_na-{lig['count']}")
+
+    return "_".join(parts) + ".xyz"
+
+
+def build_from_mixture_plan(
+        plan: List[Dict],
+        out_dir: Path,
+        ion: str,
+        cluster_kwargs: Dict,
+        show_progress: bool,
+) -> Dict[str, int]:
+    """Build clusters from a mixture plan (mixed solvents)."""
+    stats = {'attempted': 0, 'built': 0, 'failed': 0}
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    db_path = out_dir / "structures.db"
+    if db_path.exists():
+        os.remove(db_path)
+    db = connect(db_path)
+
+    xyz_dir = out_dir / "xyz"
+    xyz_dir.mkdir(exist_ok=True)
+
+    iter_obj = tqdm(plan, desc="Building Mixed Clusters", unit="item") if show_progress else plan
+
+    for item in iter_obj:
+        stats['attempted'] += 1
+
+        ligand_info_arg = []
+        for lig in item['ligands']:
+            atoms_obj = lig['entry']['atoms']
+            # Make a copy just in case
+            if isinstance(atoms_obj, Atoms):
+                atoms_obj = atoms_obj.copy()
+
+            if lig['type'] == 'anion' and isinstance(atoms_obj, Atoms):
+                atoms_obj.charge = -1
+            ligand_info_arg.append((atoms_obj, lig['count']))
+
+        fname = compose_filename_mixture(ion, item)
+        if show_progress:
+            iter_obj.set_postfix_str(f"{fname[:30]}...")
+
+        try:
+            cluster = build_cluster(
+                ion_identifier=ion,
+                ligand_molecule_info=ligand_info_arg,
+                **cluster_kwargs
+            )
+
+            cluster.info['charge'] = item['charge']
+            cluster.info['category'] = item['category']
+            cluster.info['spin'] = item.get('spin', 1)
+            cluster.info['n_anion'] = item['n_anion_total']
+
+            # Set ion charge
+            ion_symbol = ''.join([c for c in ion if c.isalpha()])
+            for atom in cluster:
+                if atom.symbol == ion_symbol:
+                    atom.charge = 1.0
+                    break
+
+            write(str(xyz_dir / fname), cluster)
+
+            kvp = {
+                'category': item['category'],
+                'ion': ion,
+                'charge': item['charge'],
+                'spin': item.get('spin', 1),
+                'total_coord': item['total_coord'],
+                'n_atoms': len(cluster),
+                'filename': fname,
+                'mix_type': item.get('mix_type', 'unknown')
+            }
+            for i, lig in enumerate(item['ligands']):
+                kvp[f"lig_{i}_name"] = lig['entry']['name']
+                kvp[f"lig_{i}_type"] = lig['type']
+                kvp[f"lig_{i}_count"] = lig['count']
+
+            db.write(cluster, data=kvp, **kvp)
+            stats['built'] += 1
+
+        except Exception as e:
+            stats['failed'] += 1
+            if show_progress:
+                logger.debug(f"Failed {fname}: {e}")
+
+    return stats
 
 
 def build_from_plan(
@@ -379,6 +699,7 @@ def entry(
         categories: Tuple[str, ...] = ('SSIP', 'CIP', 'AGG'),
         plan_only: bool = False,
         optimize_result: bool = True,
+        use_uma: bool = True,
         device: str = "cuda",
         verbose: bool = True,
         show_progress: bool = True,
@@ -386,9 +707,12 @@ def entry(
 ) -> Dict[str, int]:
     """
     团簇构建主入口函数。
+    
+    Args:
+        use_uma: 是否使用 UMA 进行预优化和后优化。设为 False 则使用 RDKit 回退方案。
     """
-    solvents_data = normalize_input_data(solvents, "Solvent", show_progress, out_dir, device)
-    anions_data = normalize_input_data(anions, "Anion", show_progress, out_dir, device)
+    solvents_data = normalize_input_data(solvents, "Solvent", show_progress, out_dir, device, use_uma)
+    anions_data = normalize_input_data(anions, "Anion", show_progress, out_dir, device, use_uma)
 
     if not solvents_data:
         raise ValueError("Solvents data cannot be empty.")
@@ -416,7 +740,8 @@ def entry(
     final_cluster_kwargs = dict(
         relative_score_threshold=0.85,
         max_patch_atoms=3,
-        initial_sphere_skin_factor=1.25,
+        initial_sphere_skin_factor=0.7,
+        sphere_skin_increment_factor=0.01,
         target_no_clashes=True,
         rotation_opt_iterations=50,
         verbose=False
@@ -434,21 +759,125 @@ def entry(
 
     logger.info(f"Build phase done. Success: {stats['built']}/{stats['attempted']}.")
 
-    if optimize_result and stats['built'] > 0:
-        raw_db_path = str(out_dirs['ALL']['db'])
-        final_opt_workspace = out_path / "final_optimized"
+    # Post-Build Optimization (UMA) - only if requested and available
+    if optimize_result and use_uma and stats['built'] > 0:
+        if UMA_AVAILABLE:
+            raw_db_path = str(out_dirs['ALL']['db'])
+            final_opt_workspace = out_path / "final_optimized"
 
-        logger.info("\n" + "=" * 50)
-        logger.info(f"Starting UMA Post-Optimization for {stats['built']} clusters...")
-        logger.info("=" * 50)
-        optimized_db_path = uma_optimizer.entry(
-            input_db=raw_db_path,
-            workspace=str(final_opt_workspace),
-            device=device,
-            verbose=verbose,
-            show_progress=show_progress
+            logger.info("\n" + "=" * 50)
+            logger.info(f"Starting UMA Post-Optimization for {stats['built']} clusters...")
+            logger.info("=" * 50)
+            try:
+                optimized_db_path = uma_optimizer.entry(
+                    input_db=raw_db_path,
+                    workspace=str(final_opt_workspace),
+                    device=device,
+                    verbose=verbose,
+                    show_progress=show_progress
+                )
+                logger.info(f"\nOptimization Complete. Final DB: {optimized_db_path}")
+            except Exception as e:
+                logger.error(f"UMA Optimization crashed: {e}")
+        else:
+            logger.warning("Post-build optimization skipped because 'uma_optimizer' module is not available.")
+    elif optimize_result and not use_uma:
+        logger.info("Post-build UMA optimization skipped (use_uma=False).")
+
+    return stats
+
+
+def entry_mixture(
+        solvents: Union[str, List[str], List[Dict]],
+        anions: Union[str, List[str], List[Dict], None] = None,
+        out_dir: str = 'out_mixture',
+        ion: str = 'Li',
+        target_totals: Tuple[int, ...] = (4, 5),
+        anion_counts: Tuple[int, ...] = (0, 1),
+        mix_n_list: Tuple[int, ...] = (1,),
+        num_mixtures: int = 10,
+        use_uma: bool = True,
+        device: str = "cuda",
+        verbose: bool = True,
+        show_progress: bool = True,
+        **cluster_kwargs
+) -> Dict[str, int]:
+    """
+    混合溶剂团簇构建入口函数。
+    
+    Args:
+        solvents: 溶剂 SMILES 列表或 DB 路径
+        anions: 阴离子 SMILES 列表或 DB 路径
+        out_dir: 输出目录
+        ion: 离子标识符
+        target_totals: 允许的总配位数 (如 (4, 5))
+        anion_counts: 允许的阴离子数量 (如 (0, 1, 2))
+        mix_n_list: 混合溶剂数量列表 (如 (1, 2) 表示单溶剂和双溶剂)
+        num_mixtures: 随机溶剂组合的最大数量
+        use_uma: 是否使用 UMA 进行预优化和后优化
+        device: UMA 设备 (cuda/cpu)
+    """
+    # 1. Load Data
+    solv_data = normalize_input_data(solvents, "Solvent", show_progress, out_dir, device, use_uma)
+    anion_data = normalize_input_data(anions, "Anion", show_progress, out_dir, device, use_uma)
+
+    if not solv_data:
+        raise ValueError("No solvent data found.")
+
+    # 2. Plan
+    full_plan = []
+    logger.info(f"\nGenerating Plans for Mix sizes: {mix_n_list}")
+
+    for m_n in mix_n_list:
+        sub_plan = plan_mixtures(
+            solvents_pool=solv_data,
+            anions_pool=anion_data,
+            mix_n=m_n,
+            num_mixtures=num_mixtures,
+            target_totals=target_totals,
+            anion_counts=anion_counts
         )
-        logger.info(f"\nOptimization Complete. Final DB: {optimized_db_path}")
+        full_plan.extend(sub_plan)
+
+    logger.info(f"Total Plan: {len(full_plan)} configurations.")
+    if len(full_plan) == 0:
+        logger.warning("Plan is empty. Check constraints.")
+        return {'attempted': 0, 'built': 0, 'failed': 0}
+
+    # 3. Build
+    final_kwargs = dict(
+        relative_score_threshold=0.85,
+        max_patch_atoms=3,
+        initial_sphere_skin_factor=0.7,
+        sphere_skin_increment_factor=0.01,
+        target_no_clashes=True,
+        rotation_opt_iterations=50,
+        verbose=False
+    )
+    final_kwargs.update(cluster_kwargs)
+
+    out_path = Path(out_dir)
+    stats = build_from_mixture_plan(full_plan, out_path, ion, final_kwargs, show_progress)
+
+    logger.info(f"Build Done: {stats['built']}/{stats['attempted']} success.")
+
+    # 4. Post-Build Optimization (UMA) - only if requested and available
+    if use_uma and UMA_AVAILABLE and stats['built'] > 0:
+        raw_db = str(out_path / "structures.db")
+        opt_dir = out_path / "optimized"
+        logger.info(f"\nRunning UMA Optimization on {raw_db}...")
+        try:
+            uma_optimizer.entry(
+                input_db=raw_db,
+                workspace=str(opt_dir),
+                device=device,
+                verbose=verbose,
+                show_progress=show_progress
+            )
+        except Exception as e:
+            logger.error(f"UMA Optimization crashed: {e}")
+    elif use_uma and not UMA_AVAILABLE:
+        logger.warning("Post-build optimization skipped because 'uma_optimizer' module is not available.")
 
     return stats
 
@@ -468,13 +897,14 @@ def main():
     parser.add_argument('--categories', default='SSIP,CIP,AGG', help='Categories to build')
 
     parser.add_argument('--no-opt', action='store_false', dest='optimize_result', help='Skip post-build optimization')
+    parser.add_argument('--no-uma', action='store_false', dest='use_uma', help='Disable UMA pre/post-optimization (use RDKit fallback)')
     parser.add_argument('--device', default='cuda', help='Device for UMA (cuda/cpu)')
 
     parser.add_argument('--plan-only', action='store_true')
     parser.add_argument('--quiet', action='store_false', dest='verbose', help='Disable verbose output')
     parser.add_argument('--no-progress', action='store_true')
 
-    parser.set_defaults(verbose=True, optimize_result=True)
+    parser.set_defaults(verbose=True, optimize_result=True, use_uma=True)
     args = parser.parse_args()
 
     solvents_arg = args.solvents
@@ -505,6 +935,7 @@ def main():
         categories=cats,
         plan_only=args.plan_only,
         optimize_result=args.optimize_result,
+        use_uma=args.use_uma,
         device=args.device,
         verbose=args.verbose,
         show_progress=not args.no_progress
