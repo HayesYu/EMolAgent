@@ -605,7 +605,15 @@ SYSTEM_PROMPTS: dict[Language, str] = {
 
 5.  **最终报告**：
     * 只生成结构：展示 3D 预览，提示用户可后续分析
-    * 执行了分析：展示电子性质，保留 `[[DOWNLOAD:...]]` 链接
+    * 执行了分析：**必须完整展示以下所有电子性质**（从 analysis_summary.csv 提取）：
+      - **HOMO** (最高占据分子轨道能级，单位 eV)
+      - **LUMO** (最低未占分子轨道能级，单位 eV)
+      - **GAP** (HOMO-LUMO 能隙，单位 eV)
+      - **ESP_max_eV / ESP_min_eV** (静电势极值，单位 eV)
+      - **Deformation_phi** (Li 变形因子)
+      - **dipole_magnitude** (偶极矩大小)
+      - **Ne_error** (电子数误差)
+    * 保留 `[[DOWNLOAD:...]]` 链接供用户下载完整结果
 
 ### 记住：
 - 用户没说「分析」「电子结构」→ 不要调用 `Run_Inference_Pipeline`
@@ -691,7 +699,15 @@ User intent can be categorized as follows:
 
 5.  **Final report**:
     * Generate only: Show 3D preview, hint user can analyze later
-    * With analysis: Show electronic properties, keep `[[DOWNLOAD:...]]` link
+    * With analysis: **Must present all the following electronic properties** (extracted from analysis_summary.csv):
+      - **HOMO** (Highest Occupied Molecular Orbital energy, in eV)
+      - **LUMO** (Lowest Unoccupied Molecular Orbital energy, in eV)
+      - **GAP** (HOMO-LUMO energy gap, in eV)
+      - **ESP_max_eV / ESP_min_eV** (Electrostatic potential extrema, in eV)
+      - **Deformation_phi** (Li deformation factor)
+      - **dipole_magnitude** (Dipole moment magnitude)
+      - **Ne_error** (Electron number error)
+    * Keep `[[DOWNLOAD:...]]` link for users to download complete results
 
 ### Remember:
 - User didn't say "analyze" or "electronic structure" → Don't call `Run_Inference_Pipeline`
