@@ -29,6 +29,8 @@ from emolagent.core.tools import (
     run_dm_infer_pipeline,
     compress_directory,
     get_task_queue_status,
+    build_molecule_structure,
+    run_molecule_infer_pipeline,
 )
 
 from emolagent.knowledge import (
@@ -347,7 +349,108 @@ def tool_search_knowledge(query: str, top_k: int = 5) -> str:
         return f"知识库搜索出错: {str(e)}"
 
 
-TOOLS = [tool_search_db, tool_build_structure_only, tool_build_multiple_clusters, tool_build_optimize, tool_infer_pipeline, tool_search_knowledge]
+@tool(
+    "Build_Molecule_Structure",
+    description=(
+        "Build and optimize a NEUTRAL small molecule structure from SMILES. "
+        "Use this when user wants to analyze a single molecule (NOT a Li+ cluster). "
+        "Keywords: 'molecule', 'SMILES', 'compound', 'predict properties of molecule'. "
+        "Args: smiles_list_json (JSON list of SMILES strings). "
+        "Returns optimized structure path and 3D visualization."
+    ),
+)
+def tool_build_molecule_structure(smiles_list_json: str, runtime: ToolRuntime[Context]) -> str:
+    """构建并优化中性分子结构。"""
+    try:
+        smiles_list = json.loads(smiles_list_json) if smiles_list_json else []
+    except Exception:
+        return json.dumps({"success": False, "msg": "Error parsing smiles_list_json."})
+    
+    if not smiles_list or len(smiles_list) == 0:
+        return json.dumps({"success": False, "msg": "No SMILES provided."})
+    
+    user_ws = get_user_workspace_from_ids(runtime.context.username, runtime.context.chat_id)
+    task_id = f"mol_{time.strftime('%Y%m%d_%H%M%S')}_{time.time_ns()}"
+    task_dir = os.path.join(user_ws, f"molecule_{task_id}")
+    
+    result = build_molecule_structure(smiles_list, task_dir)
+    
+    try:
+        res_dict = json.loads(result)
+        if res_dict.get("success"):
+            optimized_db = res_dict.get("optimized_db")
+            return json.dumps({
+                "success": True,
+                "optimized_db": optimized_db,
+                "task_dir": task_dir,
+                "molecule_count": res_dict.get("molecule_count", 1),
+                "msg": f"分子结构已生成并优化完成。路径: {optimized_db}",
+                "visualization_marker": f"[[STRUCTURE_PREVIEW:{optimized_db}]]"
+            })
+        return result
+    except:
+        return result
+
+
+@tool(
+    "Run_Molecule_Inference",
+    description=(
+        "Run HOMO/LUMO/ESP electronic structure analysis on NEUTRAL molecules. "
+        "Use this ONLY for neutral molecules (no Li ion). "
+        "Args: optimized_db_path (str) - path to the optimized molecule DB. "
+        "Returns electronic properties and visualization."
+    ),
+)
+def tool_run_molecule_inference(optimized_db_path: str, runtime: ToolRuntime[Context]) -> str:
+    """运行中性分子的电子结构推断。"""
+    if not os.path.exists(optimized_db_path):
+        return json.dumps({"success": False, "msg": f"Database not found: {optimized_db_path}"})
+    
+    db_dir = os.path.dirname(optimized_db_path)
+    run_id = str(time.time_ns())
+    infer_out = os.path.join(db_dir, f"molecule_inference_{run_id}")
+    
+    user_id = None
+    if runtime and runtime.context:
+        user_id = runtime.context.username or runtime.context.user_id
+    
+    result_json_str = run_molecule_infer_pipeline(
+        optimized_db_path,
+        infer_out,
+        user_id=user_id
+    )
+    
+    try:
+        res_dict = json.loads(result_json_str)
+        if res_dict.get("success"):
+            csv_path = res_dict.get("csv_path")
+            output_dir = res_dict.get("output_dir", infer_out)
+            gpu_id = res_dict.get("gpu_id", "N/A")
+            zip_base_name = os.path.join(db_dir, f"molecule_analysis_{run_id}")
+            zip_path = compress_directory(output_dir, zip_base_name)
+            
+            return (
+                f"分子推理完成 (GPU {gpu_id})。\n"
+                f"CSV摘要路径: {csv_path}\n"
+                f"数据预览: {res_dict.get('data_preview')}\n"
+                f"[[ANALYSIS_VISUALIZATION:{optimized_db_path}|{infer_out}]]\n"
+                f"[[DOWNLOAD:{zip_path}]]"
+            )
+        return f"分子推理出错: {result_json_str}"
+    except Exception as e:
+        return f"Error processing molecule inference results: {e}"
+
+
+TOOLS = [
+    tool_search_db, 
+    tool_build_structure_only, 
+    tool_build_multiple_clusters, 
+    tool_build_optimize, 
+    tool_infer_pipeline, 
+    tool_search_knowledge,
+    tool_build_molecule_structure,
+    tool_run_molecule_inference,
+]
 
 
 # ==============================================================================

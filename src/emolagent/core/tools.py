@@ -20,7 +20,7 @@ from emoles.inference import infer_entry
 
 from emolagent.utils.logger import logger
 from emolagent.utils.paths import get_resource_path
-from emolagent.utils.config import DatabaseConfig
+from emolagent.utils.config import DatabaseConfig, ModelConfig
 from emolagent.core import cluster_factory
 
 # ==========================================
@@ -966,3 +966,261 @@ def compress_directory(dir_path: str, output_path_base: str) -> str:
         压缩文件的完整路径
     """
     return shutil.make_archive(output_path_base, 'zip', dir_path)
+
+
+# ==========================================
+# 中性小分子构建与推理 (Neutral Molecule)
+# ==========================================
+
+# 中性分子专用模型路径（从配置文件读取）
+MOLECULE_MODEL_PATH = ModelConfig.get_molecule_inference_model_path()
+
+
+def build_molecule_structure(
+    smiles_list: list,
+    output_dir: str
+) -> str:
+    """
+    从 SMILES 构建并优化中性分子结构。
+    
+    Args:
+        smiles_list: SMILES 字符串列表
+        output_dir: 输出目录
+        
+    Returns:
+        JSON 格式的结果字符串，包含优化后的数据库路径
+    """
+    try:
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir, exist_ok=True)
+        
+        if not smiles_list or len(smiles_list) == 0:
+            return json.dumps({"success": False, "msg": "No SMILES provided."})
+        
+        logger.info(f"[Molecule Build] Building {len(smiles_list)} molecule(s) from SMILES...")
+        
+        from emolagent.core import uma_optimizer
+        
+        # 调用 UMA 优化器
+        optimized_db_path = uma_optimizer.entry(
+            smiles=smiles_list,
+            workspace=output_dir,
+            device='cuda' if torch.cuda.is_available() else 'cpu',
+            verbose=False,
+            show_progress=False
+        )
+        
+        if optimized_db_path and os.path.exists(optimized_db_path):
+            # 验证数据库中的结构数量
+            with connect(optimized_db_path) as db:
+                count = db.count()
+            
+            logger.info(f"[Molecule Build] Successfully built {count} molecule(s). Output: {optimized_db_path}")
+            
+            return json.dumps({
+                "success": True,
+                "optimized_db": optimized_db_path,
+                "molecule_count": count,
+                "msg": f"成功构建并优化 {count} 个分子。路径: {optimized_db_path}"
+            })
+        else:
+            return json.dumps({"success": False, "msg": "Molecule building failed, no output DB found."})
+    
+    except Exception as e:
+        logger.exception("Error occurred in build_molecule_structure")
+        return json.dumps({"success": False, "msg": f"Error: {str(e)}"})
+
+
+def _molecule_infer_worker(ase_db_path, model_path, output_dir, gpu_id, user_id, task_id, queue):
+    """
+    子进程 worker，用于中性分子的电子结构推断。
+    
+    与团簇推理的区别：
+    - 不计算 Li deformation（中性分子无 Li）
+    - 使用专门的分子模型
+    
+    Args:
+        ase_db_path: ASE 数据库路径
+        model_path: 模型检查点路径
+        output_dir: 输出目录
+        gpu_id: 分配的 GPU ID
+        user_id: 用户 ID（用于日志）
+        task_id: 任务 ID（用于日志）
+        queue: 用于返回结果的队列
+    """
+    # 关键：必须在 import torch 之前设置 CUDA_VISIBLE_DEVICES
+    import os
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+    os.environ["LC_ALL"] = "C"
+    os.environ["LANG"] = "C"
+    
+    import json
+    import torch
+    import pandas as pd
+    from emoles.py3Dmol import cubes_2_htmls
+    from emoles.inference import infer_entry
+    
+    from emolagent.core.tools import set_task_context, _log_with_context, NumpyEncoder
+    from emolagent.utils.logger import logger
+    
+    try:
+        set_task_context(user_id=user_id, task_id=task_id)
+        
+        ase_db_path = os.path.abspath(ase_db_path)
+        output_dir = os.path.abspath(output_dir)
+        os.makedirs(output_dir, exist_ok=True)
+        
+        os.chdir(output_dir)
+        
+        if torch.cuda.is_available():
+            _log_with_context("info", f">>> [Molecule] CUDA device count: {torch.cuda.device_count()}, using device: {torch.cuda.current_device()} (physical GPU {gpu_id})")
+        
+        # Step 1: DPTB Inference
+        _log_with_context("info", f">>> [Molecule] Starting DPTB Inference on GPU {gpu_id}...")
+        infer_entry.dptb_infer_from_ase_db(
+            ase_db_path=ase_db_path,
+            out_path=output_dir,
+            checkpoint_path=model_path,
+            limit=50,
+            device='cuda' if torch.cuda.is_available() else 'cpu'
+        )
+        
+        possible_npy_dirs = [
+            os.path.join(output_dir, 'inference', 'npy'),
+            os.path.join(output_dir, 'results')
+        ]
+        npy_results_dir = os.path.join(output_dir, 'results')
+        for d in possible_npy_dirs:
+            if os.path.exists(d):
+                npy_results_dir = d
+                break
+        
+        _log_with_context("info", f"[Molecule] Using NPY results dir: {npy_results_dir}")
+
+        # Step 2: DM Inference (分子模式：不计算 Li deformation)
+        _log_with_context("info", ">>> [Molecule] Starting DM Property Inference...")
+        
+        summary_data = infer_entry.dm_infer_entry(
+            abs_ase_path=ase_db_path,
+            results_folder_path=npy_results_dir,
+            dm_filename="predicted.npy",
+            convention="def2svp",
+            calc_esp_flag=True,
+            calc_electronic_flag=True,
+            save_cube_info=True,
+            n_save_cube_items=5,
+            cube_grid=40,
+            summary_filename="inference_summary.npz"
+        )
+        
+        _log_with_context("info", ">>> [Molecule] Generating HTML visualizations for Cube files...")
+        try:
+            cubes_2_htmls(output_dir, iso_value=0.03)
+        except Exception as e:
+            _log_with_context("warning", f"Warning: HTML generation failed: {e}")
+
+        # Step 3: Format Output
+        csv_path = os.path.join(output_dir, "analysis_summary.csv")
+        if summary_data:
+            df = pd.DataFrame(summary_data)
+            df.to_csv(csv_path, index=False)
+        
+        _log_with_context("info", f">>> [Molecule] Inference completed successfully on GPU {gpu_id}")
+            
+        result = json.dumps({
+            "success": True,
+            "csv_path": csv_path,
+            "results_dir": npy_results_dir,
+            "output_dir": output_dir,
+            "gpu_id": gpu_id,
+            "data_preview": summary_data[:3] if summary_data else []
+        }, cls=NumpyEncoder)
+        
+        queue.put({"status": "success", "data": result})
+
+    except Exception as e:
+        _log_with_context("error", f"[Molecule] Error occurred: {e}")
+        logger.exception("Error occurred")
+        queue.put({"status": "error", "message": f"Molecule Pipeline Failed (GPU {gpu_id}): {str(e)}"})
+
+
+def run_molecule_infer_pipeline(
+    ase_db_path: str,
+    output_dir: str,
+    wait_timeout: float = 300.0,
+    user_id: str = None
+) -> str:
+    """
+    运行中性分子的电子结构推理流水线。
+    
+    使用专用模型 nnenv.ep125.pth，适用于中性小分子。
+    
+    Args:
+        ase_db_path: ASE 数据库路径
+        output_dir: 输出目录
+        wait_timeout: 等待任务槽的超时时间（秒）
+        user_id: 用户 ID（用于日志追踪）
+        
+    Returns:
+        JSON 格式的结果字符串
+    """
+    task_id = f"mol_{os.path.basename(output_dir)}_{time.time_ns()}"
+    model_path = MOLECULE_MODEL_PATH
+    
+    set_task_context(user_id=user_id, task_id=task_id)
+    
+    # 尝试获取任务槽
+    slot_path = None
+    gpu_id = None
+    wait_start = time.time()
+    wait_interval = 5.0
+    
+    while slot_path is None:
+        slot_path, gpu_id = _acquire_task_slot(task_id, user_id)
+        
+        if slot_path is None:
+            elapsed = time.time() - wait_start
+            if elapsed >= wait_timeout:
+                status = get_task_queue_status()
+                _log_with_context("error", 
+                    f"[Molecule] Task queue full, timeout after {wait_timeout}s.")
+                return json.dumps({
+                    "success": False,
+                    "msg": f"任务队列已满，等待超时（{wait_timeout}秒）。请稍后再试。"
+                })
+            
+            status = get_task_queue_status()
+            remaining_wait = wait_timeout - elapsed
+            _log_with_context("info", 
+                f"[Molecule] Waiting for slot... "
+                f"({status['active_tasks']}/{status['max_tasks']} in use, "
+                f"waited {elapsed:.1f}s, timeout in {remaining_wait:.1f}s)")
+            time.sleep(wait_interval)
+    
+    _log_with_context("info", f"[Molecule] Starting inference pipeline on GPU {gpu_id}")
+    
+    try:
+        ctx = multiprocessing.get_context('spawn')
+        queue = ctx.Queue()
+        
+        p = ctx.Process(
+            target=_molecule_infer_worker, 
+            args=(ase_db_path, model_path, output_dir, gpu_id, user_id, task_id, queue)
+        )
+        p.start()
+        p.join()
+        
+        if not queue.empty():
+            res = queue.get()
+            if res['status'] == 'success':
+                _log_with_context("info", f"[Molecule] Inference completed successfully on GPU {gpu_id}")
+                return res['data']
+            else:
+                _log_with_context("error", f"[Molecule] Inference failed: {res['message']}")
+                return res['message']
+        else:
+            _log_with_context("error", "[Molecule] Subprocess did not return any data")
+            return "Molecule Pipeline Failed: Subprocess did not return any data."
+    finally:
+        _release_task_slot(slot_path)
+
