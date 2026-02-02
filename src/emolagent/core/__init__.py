@@ -11,6 +11,8 @@ from emolagent.core.tools import (
     build_and_optimize_cluster,
     run_dm_infer_pipeline,
     compress_directory,
+    build_molecule_structure,
+    run_molecule_infer_pipeline,
 )
 
 __all__ = [
@@ -20,4 +22,7 @@ __all__ = [
     "build_and_optimize_cluster",
     "run_dm_infer_pipeline",
     "compress_directory",
+    "build_molecule_structure",
+    "run_molecule_infer_pipeline",
 ]
+

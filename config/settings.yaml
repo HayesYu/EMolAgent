@@ -16,8 +16,10 @@ database:
 # 模型配置
 # ==========================================
 models:
-  # 电子结构推理模型路径（相对于 resources 目录）
+  # 电子结构推理模型路径（相对于 resources 目录）- 用于 Li+ 团簇
   inference_model: "models/nnenv.ep154.pth"
+  # 中性小分子推理模型路径（相对于 resources 目录）
+  molecule_inference_model: "models/nnenv.ep125.pth"
   # UMA 优化器模型路径（相对于 resources 目录）
   uma_checkpoint: "models/uma-m-1p1.pt"
   # UMA 模型名称

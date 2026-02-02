@@ -115,8 +115,14 @@ class ModelConfig:
     
     @staticmethod
     def get_inference_model_path() -> str:
-        """获取推理模型的完整路径"""
+        """获取推理模型的完整路径（Li+ 团簇用）"""
         rel_path = get_config("models.inference_model", "models/nnenv.ep154.pth")
+        return get_resource_path(*rel_path.split('/'))
+    
+    @staticmethod
+    def get_molecule_inference_model_path() -> str:
+        """获取中性小分子推理模型的完整路径"""
+        rel_path = get_config("models.molecule_inference_model", "models/nnenv.ep125.pth")
         return get_resource_path(*rel_path.split('/'))
     
     @staticmethod
