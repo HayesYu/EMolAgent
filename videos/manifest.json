@@ -1,0 +1,14 @@
+[
+  {
+    "file": "edited_emolagent.mp4",
+    "bytes": 13673036,
+    "sha256": "95c9040504a9128ac0d53ba7d84be6696dd6468dc0b75d440e0e84d59c9b0dc6",
+    "duration_seconds": 68.13333333333334
+  },
+  {
+    "file": "original_EMolAgent_English_unedited.mp4",
+    "bytes": 12671574,
+    "sha256": "c6e819f8d1b28b9dd29490e45769ef7499b9fb3972b4eaf7920ecc0d36995bf2",
+    "duration_seconds": 445.59090909090907
+  }
+]

@@ -1,195 +1,207 @@
 # EMolAgent
 
-> 中文 | [English](README_EN.md)
+> English | [中文](README_ZH.md)
 
-EMolAgent 是一个基于大语言模型的计算化学 AI 助手，集成分子团簇计算（结构构建并优化 + 电子性质预测）和 RAG 文献问答功能。
+EMolAgent is an LLM-based computational chemistry AI assistant that integrates molecular cluster computation (structure construction & optimization + electronic property prediction) and RAG literature Q&A.
 
-## 目录
+## EMolAgent demo
+
+**[Watch the edited demonstration (1:08)](https://huggingface.co/datasets/Franklalalala/EMolStudio-review-bundle#emolagent-demo)** ·
+**[Original English recording, unedited (7:26)](https://huggingface.co/datasets/Franklalalala/EMolStudio-review-bundle/blob/main/videos/original_EMolAgent_English_unedited.mp4)**
+
+[![EMolAgent animated demonstration — click to watch the full video](videos/emolagent-preview.gif)](https://huggingface.co/datasets/Franklalalala/EMolStudio-review-bundle#emolagent-demo)
+
+The videos are freely accessible without a GitHub account. For offline viewing,
+open [the edited MP4](videos/edited_emolagent.mp4) or
+[the original English MP4](videos/original_EMolAgent_English_unedited.mp4).
+
+## Table of Contents
 
 - [EMolAgent](#emolagent)
-  - [目录](#目录)
-  - [中英文双语支持](#中英文双语支持)
-  - [项目结构](#项目结构)
-  - [环境要求](#环境要求)
-  - [Docker 快速部署](#docker-快速部署)
-  - [手动安装步骤（推荐）](#手动安装步骤推荐)
-    - [1. 创建 Conda 环境](#1-创建-conda-环境)
-    - [2. 安装基础依赖](#2-安装基础依赖)
-    - [3. 克隆 EMolAgent](#3-克隆-emolagent)
-    - [4. 安装 DeePTB](#4-安装-deeptb)
-    - [5. 安装 EMolES](#5-安装-emoles)
-    - [6. 安装 learn\_qh9](#6-安装-learn_qh9)
-    - [7. 安装 dftio](#7-安装-dftio)
-    - [8. 克隆 ai4mol](#8-克隆-ai4mol)
-    - [9. 安装 Multiwfn](#9-安装-multiwfn)
-    - [10. 安装其他依赖](#10-安装其他依赖)
-    - [11. 下载模型文件](#11-下载模型文件)
-  - [配置](#配置)
-    - [配置文件](#配置文件)
-    - [API Key 配置](#api-key-配置)
-  - [使用方法](#使用方法)
-    - [启动应用](#启动应用)
-    - [使用 RAG 功能](#使用-rag-功能)
-    - [使用 ESP 可视化功能](#使用-esp-可视化功能)
-    - [自定义配置](#自定义配置)
-  - [许可证](#许可证)
-  - [致谢](#致谢)
+  - [Table of Contents](#table-of-contents)
+  - [Chinese/English Bilingual Support](#chineseenglish-bilingual-support)
+  - [Project Structure](#project-structure)
+  - [Requirements](#requirements)
+  - [Docker Quick Deploy](#docker-quick-deploy)
+  - [Manual Installation (Recommended)](#manual-installation-recommended)
+    - [1. Create Conda Environment](#1-create-conda-environment)
+    - [2. Install Base Dependencies](#2-install-base-dependencies)
+    - [3. Clone EMolAgent](#3-clone-emolagent)
+    - [4. Install DeePTB](#4-install-deeptb)
+    - [5. Install EMolES](#5-install-emoles)
+    - [6. Install learn_qh9](#6-install-learn_qh9)
+    - [7. Install dftio](#7-install-dftio)
+    - [8. Clone ai4mol](#8-clone-ai4mol)
+    - [9. Install Multiwfn](#9-install-multiwfn)
+    - [10. Install Other Dependencies](#10-install-other-dependencies)
+    - [11. Download Model Files](#11-download-model-files)
+  - [Configuration](#configuration)
+    - [Config File](#config-file)
+    - [API Key Configuration](#api-key-configuration)
+  - [Usage](#usage)
+    - [Launch Application](#launch-application)
+    - [Using RAG](#using-rag)
+    - [Using ESP Visualization](#using-esp-visualization)
+    - [Custom Configuration](#custom-configuration)
+  - [License](#license)
+  - [Acknowledgments](#acknowledgments)
 
-## 中英文双语支持
+## Chinese/English Bilingual Support
 
-EMolAgent 支持**中文**和**English**双语界面，可在应用内随时切换：
+EMolAgent supports **Chinese** and **English** interfaces. You can switch languages anytime within the app:
 
-- **切换方式**：在登录页或主界面侧边栏右上角，使用语言选择器（🌐）切换
-- **记忆偏好**：语言选择会保存在 Cookie 中，下次访问时自动恢复
-- **覆盖范围**：界面文案、模型系统提示词、可视化组件等均已支持双语
+- **How to switch**: Use the language selector (🌐) in the login page or the top-right corner of the sidebar
+- **Preference persistence**: Your language choice is saved in cookies and restored on your next visit
+- **Coverage**: UI text, model system prompts, and visualization components all support both languages
 
-## 项目结构
+## Project Structure
 
 ```
 EMolAgent/
-├── src/emolagent/           # 主程序包
-│   ├── app.py               # Streamlit 主应用
-│   ├── core/                # 核心功能模块
-│   │   ├── cluster_factory.py   # 分子团簇构建
-│   │   ├── uma_optimizer.py     # UMA 结构优化
-│   │   └── tools.py             # LangChain 工具集
-│   ├── database/            # 数据库模块
-│   │   └── db.py                # 用户与会话管理
-│   ├── knowledge/           # RAG 知识库模块
-│   │   └── knowledge_base.py    # 文献问答系统
-│   ├── visualization/       # 可视化模块
-│   │   └── mol_viewer.py        # 3D 分子可视化
-│   └── utils/               # 工具模块
-│       ├── config.py            # 配置管理
-│       ├── i18n.py              # 国际化（中英文翻译）
-│       ├── logger.py            # 日志配置
-│       └── paths.py             # 路径管理
-├── config/                  # 配置文件目录
-│   └── settings.yaml            # 主配置文件
-├── resources/               # 资源文件
-│   ├── models/              # 模型权重文件
-│   └── db/                  # 数据库文件
-├── data/                    # ChromaDB 向量数据库
-├── users/                   # 用户数据目录
-├── run.py                   # 启动脚本
-└── pyproject.toml           # 项目配置
+├── src/emolagent/           # Main package
+│   ├── app.py               # Streamlit main application
+│   ├── core/                # Core modules
+│   │   ├── cluster_factory.py   # Molecular cluster construction
+│   │   ├── uma_optimizer.py     # UMA structure optimization
+│   │   └── tools.py             # LangChain tools
+│   ├── database/            # Database module
+│   │   └── db.py                # User and session management
+│   ├── knowledge/           # RAG knowledge base module
+│   │   └── knowledge_base.py    # Literature Q&A system
+│   ├── visualization/       # Visualization module
+│   │   └── mol_viewer.py        # 3D molecular visualization
+│   └── utils/               # Utility modules
+│       ├── config.py            # Configuration management
+│       ├── i18n.py              # Internationalization (Chinese/English)
+│       ├── logger.py            # Logging configuration
+│       └── paths.py             # Path management
+├── config/                  # Configuration directory
+│   └── settings.yaml            # Main config file
+├── resources/               # Resource files
+│   ├── models/              # Model weights
+│   └── db/                  # Database files
+├── data/                    # ChromaDB vector database
+├── users/                   # User data directory
+├── run.py                   # Launch script
+└── pyproject.toml           # Project configuration
 ```
 
-## 环境要求
+## Requirements
 
 - Python 3.10
-- CUDA 12.8（用于 GPU 加速）
-- Conda 包管理器
-- Linux 64bit 系统
+- CUDA 12.8 (for GPU acceleration)
+- Conda package manager
+- Linux 64bit
 
-## Docker 快速部署
+## Docker Quick Deploy
 
-使用 Docker 可以快速部署 EMolAgent，无需手动安装复杂的依赖环境。
+Docker allows quick deployment of EMolAgent without manually installing complex dependencies.
 
-### 前置要求
+### Prerequisites
 
-- Docker 和 Docker Compose
-- NVIDIA GPU 驱动
+- Docker and Docker Compose
+- NVIDIA GPU driver
 - [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
 
 ```bash
-# 安装 NVIDIA Container Toolkit（Ubuntu）
+# Install NVIDIA Container Toolkit (Ubuntu)
 sudo apt-get update
 sudo apt-get install -y nvidia-container-toolkit
 sudo systemctl restart docker
 ```
 
-### 快速开始
+### Quick Start
 
-#### 1. 克隆项目
+#### 1. Clone the Project
 
 ```bash
 git clone https://github.com/HayesYu/EMolAgent.git
 cd EMolAgent
 ```
 
-#### 2. 准备模型文件
+#### 2. Prepare Model Files
 
 ```bash
-# 创建模型目录
+# Create models directory
 mkdir -p resources/models
 
-# 将模型文件放入 resources/models/ 目录：
-# - uma-m-1p1.pt（从 https://huggingface.co/facebook/UMA 申请）
-# - 电子结构推理权重文件（从 https://drive.google.com/drive/folders/17u1Ex9FNi0lza2Kc0vjP4fU-NssIlO-2?usp=drive_link 获取，该版本仅供测试使用，最新版本暂未发布）
+# Place model files in resources/models/:
+# - uma-m-1p1.pt (apply at https://huggingface.co/facebook/UMA)
+# - Electronic structure inference weight file (You can obtain it from https://drive.google.com/drive/folders/17u1Ex9FNi0lza2Kc0vjP4fU-NssIlO-2?usp=drive_link)
+# This version is for testing purposes only; the latest version has not yet been released.
 ```
 
-#### 3. 配置环境变量
+#### 3. Configure Environment Variables
 
 ```bash
-# 必需：Google API Key
+# Required: Google API Key
 export GOOGLE_API_KEY="your-google-api-key"
 
-# 必需：Multiwfn
-# 从 http://sobereva.com/multiwfn/ 下载 Linux 64bit noGUI 版本，具体配置详见手动安装部分
+# Required: Multiwfn
+# Download Linux 64bit noGUI version from http://sobereva.com/multiwfn/ (See the manual installation section for details.)
 export MULTIWFN_PATH="/path/to/Multiwfn_2026.1.12_bin_Linux_noGUI"
 
-# 可选：RAG 文献库目录
+# Optional: RAG literature directory
 export LITERATURE_PATH="/path/to/your/literature"
 ```
 
-#### 4. 构建并启动
+#### 4. Build and Start
 
 ```bash
-# 构建镜像（首次需要较长时间）
+# Build image (takes time on first run)
 docker-compose build
 
-# 启动服务
+# Start service
 docker-compose up -d
 
-# 查看日志
+# View logs
 docker-compose logs -f
 ```
 
-#### 5. 访问应用
+#### 5. Access Application
 
-浏览器打开 http://localhost:8501
+Open http://localhost:8501 in your browser
 
-### Docker 挂载说明
+### Docker Volume Mounts
 
-| 挂载路径 | 用途 | 必需 |
-|---------|------|------|
-| `./data` | ChromaDB + SQLite 数据 | 是（自动创建） |
-| `./users` | 用户任务输出 | 是（自动创建） |
-| `./logs` | 日志文件 | 是（自动创建） |
-| `./resources/models` | 模型文件 | 是（需预先放置） |
-| `./config/settings.yaml` | 自定义配置 | 否 |
-| `$MULTIWFN_PATH` | Multiwfn 二进制 | 是（需预先放置） |
-| `$LITERATURE_PATH` | RAG 文献库 | 否 |
+| Mount Path | Purpose | Required |
+|------------|---------|----------|
+| `./data` | ChromaDB + SQLite data | Yes (auto-created) |
+| `./users` | User task output | Yes (auto-created) |
+| `./logs` | Log files | Yes (auto-created) |
+| `./resources/models` | Model files | Yes (must be pre-placed) |
+| `./config/settings.yaml` | Custom config | No |
+| `$MULTIWFN_PATH` | Multiwfn binary | Yes (must be pre-placed) |
+| `$LITERATURE_PATH` | RAG literature | No |
 
-### 常用 Docker 命令
+### Common Docker Commands
 
 ```bash
-# 停止服务
+# Stop service
 docker-compose down
 
-# 重启服务
+# Restart service
 docker-compose restart
 
-# 查看容器状态
+# Check container status
 docker-compose ps
 
-# 进入容器调试
+# Enter container for debugging
 docker-compose exec emolagent bash
 ```
 
 ---
 
-## 手动安装步骤（推荐）
+## Manual Installation (Recommended)
 
-### 1. 创建 Conda 环境
+### 1. Create Conda Environment
 
 ```bash
 conda create -n EMolAgent python=3.10
 conda activate EMolAgent
 ```
 
-### 2. 安装基础依赖
+### 2. Install Base Dependencies
 
 ```bash
 pip install fairchem-core==2.12.0
@@ -197,13 +209,13 @@ pip install torch_geometric
 pip install torch_scatter torch_sparse torch_cluster torch_spline_conv pyg_lib -f https://data.pyg.org/whl/torch-2.8.0+cu128.html
 ```
 
-### 3. 克隆 EMolAgent
+### 3. Clone EMolAgent
 
 ```bash
 git clone https://github.com/HayesYu/EMolAgent.git
 ```
 
-### 4. 安装 DeePTB
+### 4. Install DeePTB
 
 ```bash
 git clone https://github.com/Franklalalala/DeePTB.git
@@ -211,14 +223,14 @@ cd DeePTB/
 git checkout onehot
 ```
 
-打开 `pyproject.toml`，取消 `scipy` 和 `lmdb` 的版本限制，然后安装：
+Remove version constraints for `scipy` and `lmdb` in `pyproject.toml`, then install:
 
 ```bash
-pip install . 
+pip install .
 cd ..
 ```
 
-### 5. 安装 EMolES
+### 5. Install EMolES
 
 ```bash
 git clone https://github.com/Franklalalala/EMolES.git
@@ -228,53 +240,53 @@ pip install -e .
 cd ..
 ```
 
-### 6. 安装 learn_qh9
+### 6. Install learn_qh9
 
 ```bash
 git clone https://github.com/Franklalalala/learn_qh9.git
 cd learn_qh9/
-pip install . 
+pip install .
 cd ..
 ```
 
-### 7. 安装 dftio
+### 7. Install dftio
 
 ```bash
 git clone https://github.com/deepmodeling/dftio.git
 cd dftio/
 ```
 
-打开 `pyproject.toml`，取消 `scipy`、`torch`、`lmdb`、`torch-scatter` 的版本限制，然后安装：
+Remove version constraints for `scipy`, `torch`, `lmdb`, `torch-scatter` in `pyproject.toml`, then install:
 
 ```bash
 pip install .
-cd .. 
+cd ..
 ```
 
-### 8. 克隆 ai4mol
+### 8. Clone ai4mol
 
 ```bash
 git clone https://github.com/Franklalalala/ai4mol.git
 ```
 
-### 9. 安装 Multiwfn
+### 9. Install Multiwfn
 
-1. 前往 [Multiwfn 官网](http://sobereva.com/multiwfn/) 下载 Linux 64bit (noGUI version)
+1. Download Linux 64bit (noGUI version) from [Multiwfn official site](http://sobereva.com/multiwfn/)
 
-2. 解压并配置：
+2. Extract and configure:
 
 ```bash
-unzip Multiwfn_2026.1. 12_bin_Linux_noGUI.zip
+unzip Multiwfn_2026.1.12_bin_Linux_noGUI.zip
 cd Multiwfn_2026.1.12_bin_Linux_noGUI/
 ```
 
-3. 配置环境变量，编辑 `~/.bashrc`：
+3. Configure environment variables. Edit `~/.bashrc`:
 
 ```bash
 vim ~/.bashrc
 ```
 
-添加以下内容：
+Add the following:
 
 ```bash
 ulimit -s unlimited
@@ -282,7 +294,7 @@ export Multiwfnpath=/path/to/Multiwfn_2026.1.12_bin_Linux_noGUI
 export PATH="$Multiwfnpath:$HOME/bin:$PATH"
 ```
 
-4. 使配置生效并设置权限：
+4. Apply configuration and set permissions:
 
 ```bash
 source ~/.bashrc
@@ -290,13 +302,13 @@ conda activate EMolAgent
 chmod +x /path/to/Multiwfn_2026.1.12_bin_Linux_noGUI/Multiwfn
 ```
 
-5. 修改 `settings.ini` 配置：
+5. Edit `settings.ini`:
 
 ```bash
 vim settings.ini
 ```
 
-将 `nthreads` 修改为 `64`（或根据您的 CPU 核心数调整）：
+Set `nthreads` to `64` (or adjust based on your CPU cores):
 
 ```ini
 nthreads=64
@@ -306,121 +318,121 @@ nthreads=64
 cd ..
 ```
 
-### 10. 安装其他依赖
+### 10. Install Other Dependencies
 
 ```bash
-# 安装 MOKIT
+# Install MOKIT
 conda install mokit -c mokit -c conda-forge -y
 
-# 安装系统依赖
+# Install system dependencies
 sudo apt install -y libcairo2-dev pkg-config python3-dev
 
-# 安装 RDKit
+# Install RDKit
 conda install -c conda-forge rdkit
 
-# 安装 EMolAgent 及其 Python 依赖
+# Install EMolAgent and its Python dependencies
 cd EMolAgent/
 pip install -e .
 ```
 
-### 11. 下载模型文件
+### 11. Download Model Files
 
-1. 前往 [Hugging Face UMA](https://huggingface.co/facebook/UMA) 申请获得 `uma-m-1p1.pt` 模型使用权
+1. Apply for `uma-m-1p1.pt` model access at [Hugging Face UMA](https://huggingface.co/facebook/UMA)
 
-2. 将 `uma-m-1p1.pt` 放置于 `EMolAgent/resources/models/` 目录下
+2. Place `uma-m-1p1.pt` in `EMolAgent/resources/models/`
 
-3. 前往 [Google Drive nnenv](https://drive.google.com/drive/folders/17u1Ex9FNi0lza2Kc0vjP4fU-NssIlO-2?usp=drive_link) 获取电子结构推理权重文件
-   > **注意**：该文件仅供测试使用，最新版本暂未发布
+3. Apply for electronic structure inference weight file access at [Google Drive nnenv](https://drive.google.com/drive/folders/17u1Ex9FNi0lza2Kc0vjP4fU-NssIlO-2?usp=drive_link)
+   > **Note**: This file is for testing purposes only; the latest version has not yet been released.
 
-4. 将电子结构推理权重文件放置于 `EMolAgent/resources/models/`
+4. Place electronic structure inference weight file in `EMolAgent/resources/models/`
 
-## 配置
+## Configuration
 
-### 配置文件
+### Config File
 
-项目使用 YAML 配置文件集中管理各类参数，配置文件位于 `config/settings.yaml`。
+The project uses a YAML config file for centralized parameter management at `config/settings.yaml`.
 
-主要配置项包括：
+Main configuration items:
 
-| 配置分类 | 配置项 | 说明 |
-|---------|--------|------|
-| `database` | `solvent_db`, `anion_db` | 分子数据库文件路径 |
-| `models` | `inference_model`, `uma_checkpoint`, `uma_model_name` | 模型路径和名称 |
-| `gpu` | `available_gpus`, `max_tasks_per_gpu` | GPU 设备列表和并发任务限制 |
-| `logging` | `max_log_size`, `backup_count` | 日志文件大小和备份数量 |
-| `visualization` | `max_preview_structures` | 结构预览最大显示数量 |
-| `auth` | `admin_users` | 管理员用户名列表 |
-| `knowledge` | `literature_path`, `collection_name` | 文献库路径和集合名称 |
-| `molecules` | `default_dme_smiles`, `default_fsi_smiles` | 默认分子 SMILES 定义 |
-| `output` | `uma_workspace` | 优化器输出目录 |
+| Category | Key | Description |
+|----------|-----|-------------|
+| `database` | `solvent_db`, `anion_db` | Molecular database file paths |
+| `models` | `inference_model`, `uma_checkpoint`, `uma_model_name` | Model paths and names |
+| `gpu` | `available_gpus`, `max_tasks_per_gpu` | GPU device list and concurrent task limits |
+| `logging` | `max_log_size`, `backup_count` | Log file size and backup count |
+| `visualization` | `max_preview_structures` | Max number of structures in preview |
+| `auth` | `admin_users` | Admin usernames |
+| `knowledge` | `literature_path`, `collection_name` | Literature path and collection name |
+| `molecules` | `default_dme_smiles`, `default_fsi_smiles` | Default molecule SMILES |
+| `output` | `uma_workspace` | Optimizer output directory |
 
-修改配置后需重启应用生效。也可通过环境变量 `EMOL_CONFIG_PATH` 指定自定义配置文件路径。
+Restart the application after config changes. You can also set `EMOL_CONFIG_PATH` to use a custom config path.
 
-### API Key 配置
+### API Key Configuration
 
-前往 [Google AI Studio](https://aistudio.google.com/app/api-keys) 注册您的 Google API Key
+Register your Google API Key at [Google AI Studio](https://aistudio.google.com/app/api-keys)
 
-## 使用方法
+## Usage
 
-### 启动应用
+### Launch Application
 
 ```bash
 cd /path/to/EMolAgent/
 export GOOGLE_API_KEY="Your Google API KEY"
 
-# 方式一：使用启动脚本（推荐）
+# Option 1: Use launch script (recommended)
 python run.py
 
-# 方式二：直接运行 Streamlit
+# Option 2: Run Streamlit directly
 streamlit run src/emolagent/app.py
 ```
 
-### 使用 RAG 功能
+### Using RAG
 
-1. 将文献 PDF 文件放置于配置的文献目录中（在 `config/settings.yaml` 中配置 `knowledge.literature_path`）
+1. Place PDF files in the configured literature directory (`knowledge.literature_path` in `config/settings.yaml`)
 
-2. 在 `config/settings.yaml` 中的 `auth.admin_users` 列表里添加您的用户名
+2. Add your username to `auth.admin_users` in `config/settings.yaml`
 
-3. 启动应用后，在左侧栏中点击 **"重建索引"** 即可使用 RAG 功能
+3. After launching, click **"Rebuild Index"** in the sidebar to use RAG
 
-### 使用 ESP 可视化功能
+### Using ESP Visualization
 
-ESP 可视化需要 Multiwfn 生成的 cube 文件。启用方法：
+ESP visualization requires cube files generated by Multiwfn. To enable:
 
-1. 将 EMolES 项目中 `EMolES/src/emoles/inference/infer_entry.py` 的 `gen_esp_cube_flag: bool = False` 改为 `True`
+1. Change `gen_esp_cube_flag: bool = False` to `True` in `EMolES/src/emoles/inference/infer_entry.py`
 
-2. 确保 Multiwfn 已正确安装并配置环境变量
+2. Ensure Multiwfn is installed and environment variables are configured
 
-### 自定义配置
+### Custom Configuration
 
-如需修改默认参数（如 GPU 并发数、管理员列表、模型路径等），直接编辑 `config/settings.yaml` 文件即可。
+To modify default parameters (e.g., GPU concurrency, admin list, model paths), edit `config/settings.yaml`.
 
-配置示例：
+Example:
 
 ```yaml
-# 修改 GPU 配置
+# Modify GPU config
 gpu:
-  available_gpus: [0, 1, 2, 3]  # 使用 4 张 GPU
-  max_tasks_per_gpu: 3          # 每张 GPU 最多 3 个并发任务
+  available_gpus: [0, 1, 2, 3]  # Use 4 GPUs
+  max_tasks_per_gpu: 3          # Max 3 concurrent tasks per GPU
 
-# 添加管理员
+# Add admins
 auth:
   admin_users:
     - "hayes"
     - "your_username"
 
-# 修改文献库路径
+# Modify literature path
 knowledge:
   literature_path: "/your/custom/path/to/literature"
 ```
 
-## 许可证
+## License
 
-本项目采用 [MIT 许可证](LICENSE) 进行许可。
+This project is licensed under the [MIT License](LICENSE).
 
-## 致谢
+## Acknowledgments
 
-感谢以下开源项目的支持：
+Thanks to the following open-source projects:
 - [DeePTB](https://github.com/Franklalalala/DeePTB)
 - [EMolES](https://github.com/Franklalalala/EMolES)
 - [learn_qh9](https://github.com/Franklalalala/learn_qh9)
