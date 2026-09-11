@@ -9,7 +9,7 @@ EMolAgent is an LLM-based computational chemistry AI assistant that integrates m
 **[Watch the edited demonstration (1:08)](https://huggingface.co/datasets/Franklalalala/EMolStudio-review-bundle#emolagent-demo)** ·
 **[Original English recording, unedited (7:26)](https://huggingface.co/datasets/Franklalalala/EMolStudio-review-bundle/blob/main/videos/original_EMolAgent_English_unedited.mp4)**
 
-[![EMolAgent demonstration: molecular orbital visualization](videos/emolagent-preview.jpg)](https://huggingface.co/datasets/Franklalalala/EMolStudio-review-bundle#emolagent-demo)
+[![EMolAgent animated demonstration — click to watch the full video](videos/emolagent-preview.gif)](https://huggingface.co/datasets/Franklalalala/EMolStudio-review-bundle#emolagent-demo)
 
 The videos are freely accessible without a GitHub account. For offline viewing,
 open [the edited MP4](videos/edited_emolagent.mp4) or

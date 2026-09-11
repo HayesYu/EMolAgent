@@ -9,7 +9,7 @@ EMolAgent 是一个基于大语言模型的计算化学 AI 助手，集成分子
 **[观看剪辑版（1 分 08 秒）](https://huggingface.co/datasets/Franklalalala/EMolStudio-review-bundle#emolagent-demo)** ·
 **[英文原始录屏，未剪辑（7 分 26 秒）](https://huggingface.co/datasets/Franklalalala/EMolStudio-review-bundle/blob/main/videos/original_EMolAgent_English_unedited.mp4)**
 
-[![EMolAgent 运行演示：分子轨道可视化](videos/emolagent-preview.jpg)](https://huggingface.co/datasets/Franklalalala/EMolStudio-review-bundle#emolagent-demo)
+[![EMolAgent 动态演示 — 点击观看完整视频](videos/emolagent-preview.gif)](https://huggingface.co/datasets/Franklalalala/EMolStudio-review-bundle#emolagent-demo)
 
 无需 GitHub 账号即可观看。下载仓库后，可直接打开
 [剪辑版 MP4](videos/edited_emolagent.mp4) 或

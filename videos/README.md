@@ -10,3 +10,5 @@ the original preserves the full recorded interaction. Both MP4 files are supplie
 File sizes, durations and SHA-256 checksums are recorded in `manifest.json`.
 
 EMolAgent is developed and maintained by Huize Yu: https://github.com/HayesYu/EMolAgent.
+
+The README uses `emolagent-preview.gif`, a silent looping preview of the full edited recording (720 px wide, 6 fps). Click the animation to open the full video player.
