@@ -4,6 +4,17 @@
 
 EMolAgent 是一个基于大语言模型的计算化学 AI 助手，集成分子团簇计算（结构构建并优化 + 电子性质预测）和 RAG 文献问答功能。
 
+## 运行视频
+
+**[观看剪辑版（1 分 08 秒）](https://huggingface.co/datasets/Franklalalala/EMolStudio-review-bundle#emolagent-demo)** ·
+**[英文原始录屏，未剪辑（7 分 26 秒）](https://huggingface.co/datasets/Franklalalala/EMolStudio-review-bundle/blob/main/videos/original_EMolAgent_English_unedited.mp4)**
+
+[![EMolAgent 运行演示：分子轨道可视化](videos/emolagent-preview.jpg)](https://huggingface.co/datasets/Franklalalala/EMolStudio-review-bundle#emolagent-demo)
+
+无需 GitHub 账号即可观看。下载仓库后，可直接打开
+[剪辑版 MP4](videos/edited_emolagent.mp4) 或
+[英文未剪辑版 MP4](videos/original_EMolAgent_English_unedited.mp4)。
+
 ## 目录
 
 - [EMolAgent](#emolagent)

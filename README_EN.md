@@ -4,6 +4,17 @@
 
 EMolAgent is an LLM-based computational chemistry AI assistant that integrates molecular cluster computation (structure construction & optimization + electronic property prediction) and RAG literature Q&A.
 
+## EMolAgent demo
+
+**[Watch the edited demonstration (1:08)](https://huggingface.co/datasets/Franklalalala/EMolStudio-review-bundle#emolagent-demo)** ·
+**[Original English recording, unedited (7:26)](https://huggingface.co/datasets/Franklalalala/EMolStudio-review-bundle/blob/main/videos/original_EMolAgent_English_unedited.mp4)**
+
+[![EMolAgent demonstration: molecular orbital visualization](videos/emolagent-preview.jpg)](https://huggingface.co/datasets/Franklalalala/EMolStudio-review-bundle#emolagent-demo)
+
+The videos are freely accessible without a GitHub account. For offline viewing,
+open [the edited MP4](videos/edited_emolagent.mp4) or
+[the original English MP4](videos/original_EMolAgent_English_unedited.mp4).
+
 ## Table of Contents
 
 - [EMolAgent](#emolagent)
